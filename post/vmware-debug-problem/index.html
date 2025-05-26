@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html>
+<head>
+<link rel="shortcut icon" href="https://augu5tu.github.io/favicon.ico" type="image/x-icon" /><meta name="viewport"content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0"/><meta name="apple-mobile-web-app-capable"content="yes"/><meta name="apple-mobile-web-app-status-bar-style"content="black"/><meta name="format-detection"content="telephone=no"/><meta name="renderer"content="webkit"><meta name="description"content="飞光之下，对结构与失序的片刻凝视，录于此间：对若干封闭系统的交互逻辑作审慎考察；观测特定输入变异对系统状态产生的效应；以及某些非预期行为的溯源与校正。&lt;br&gt;
+另，偶于叙事构造中暂留。&lt;br&gt;"><meta charset="UTF-8"><title>vmware 双机联调 不能下断点 debug 问题 | Augu5tu-飞光</title>
+<link href="https://augu5tu.github.io/styles/main.css" type="text/css" rel="stylesheet" /><link href="https://at.alicdn.com/t/font_1621793_zatzzgvf30g.css" type="text/css" rel="stylesheet" /><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.12.0/dist/katex.css"><script async src="https://cdn.jsdelivr.net/npm/busuanzi@2.3.0/bsz.pure.mini.min.js"></script><script src="https://augu5tu.github.io/media/js/magnify.min.js"></script><script defer src="https://cdn.jsdelivr.net/npm/katex@0.12.0/dist/katex.min.js"></script>
+<script type="text/javascript">function btn_toggle(){document.getElementById("hn").classList.contains("no-js")?document.getElementById("hn").classList.remove("no-js"):document.getElementById("hn").classList.add("no-js")}</script>
+
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-DLNENTJ4LP"></script>
+<script>
+	window.dataLayer = window.dataLayer || [];
+	function gtag() {
+		dataLayer.push(arguments);
+	}
+	gtag('js', new Date());
+	gtag('config', 'G-DLNENTJ4LP');
+</script>
+
+<link rel="canonical" href="https://augu5tu.github.io/post/vmware-debug-problem/" />
+</head>
+<body>
+<div class="progress"></div><style>.progress{background:linear-gradient(to right,#87ceeb var(--scroll),transparent 0);background-repeat:no-repeat;position:fixed;width:100%;height:4px;z-index:1}</style><div class="darkmode-background"></div><div class="darkmode-layer"></div>
+<noscript><p class="warn" >本页面需要浏览器支持（启用）JavaScript</p></noscript><div class="header"><div class="logo_title"><div class="title animated fadeInDown"><a href="https://augu5tu.github.io"><img alt="logo" style="display:inline-block;" src="https://augu5tu.github.io/images/avatar.png"/></a><h1 title="Augu5tu-飞光" class="weaklink"><a  href="/">Augu5tu-飞光</a></h1>
+
+<div class="navbar weaklink">
+<div class="normal_nav">
+<div class="bitcron_nav_container"><div class="bitcron_nav"><div class="bitcron_nav"><div style="display:flex;justify-content:center;"><nav class="mixed_site_nav_wrap site_nav_wrap"><ul class="mixed_site_nav site_nav sm sm-base">	<li><a id="d2ef19af68cc211e98f8a0242ac110003" href="/" class="selected active current nav__item" >首页</a></li><li><a id="d2ef19af68cc211e98f8a0242ac110003" href="/archives" class="selected active current nav__item" >归档</a></li><li><a id="d2ef19af68cc211e98f8a0242ac110003" href="/tags" class="selected active current nav__item" >标签</a></li><li><a id="d2ef19af68cc211e98f8a0242ac110003" href="/post/about" class="selected active current nav__item" >关于</a></li></ul></nav>
+<div style="float:right;margin-top:1em"><form id="gridea-search-form" data-update="1578893743252" action="/search/index.html"><input class="search-input" autocomplete="off" spellcheck="false" name="q" placeholder="Search..."></form></div><div style="margin-left:0.5em;margin-top:1.2em"><input id="switch_default" onclick="mobileBtn()" type="checkbox" class="switch_default"><label for="switch_default" class="toggleBtn"></label></div></div>
+<div class="clear clear_nav_inline_end"></div></div></div><div class="clear clear_nav_end"></div></div></div><div class="hamberger" href="javascript:void(0)" onclick="btn_toggle();"><i class="iconfont icon-category"></i></div></div></div></div>
+<div id="hn" class="no-js hidden_nav animated fadeInDown"><div class="bitcron_nav_container"><div class="bitcron_nav"><nav class="mixed_site_nav_wrap site_nav_wrap"><ul class="mixed_site_nav site_nav sm sm-base">	<li><a id="d2ef19af68cc211e98f8a0242ac110003" href="/" class="selected active current nav__item" >首页</a></li><li><a id="d2ef19af68cc211e98f8a0242ac110003" href="/archives" class="selected active current nav__item" >归档</a></li><li><a id="d2ef19af68cc211e98f8a0242ac110003" href="/tags" class="selected active current nav__item" >标签</a></li><li><a id="d2ef19af68cc211e98f8a0242ac110003" href="/post/about" class="selected active current nav__item" >关于</a></li></ul><div class="clear clear_nav_inline_end"></div></nav></div><div class="clear clear_nav_end"></div></div>
+<div style="display:flex;justify-content:center;inline-block;text-align:center;margin-top:7%"><div><form id="gridea-search-form" data-update="1748232441122" action="/search/index.html"><input class="search-input" autocomplete="off" spellcheck="false" name="q"  placeholder="Search..." /></form></div><div style="margin-left:0.5em"><input id="switch_default_h" onclick="mobileBtn()" type="checkbox" class="switch_default"><label for="switch_default" class="toggleBtn"></label></div></div>
+</div></div>
+<script>function enableDarkmode(){document.body.classList.add("darkmode"),document.getElementById("switch_default").checked=1,document.getElementById("switch_default_h").checked=1}function removeDarkmode(){document.body.classList.remove("darkmode"),document.getElementById("switch_default").checked=0,document.getElementById("switch_default_h").checked=0}function getCookie(a){var b,c=new RegExp("(^| )"+a+"=([^;]*)(;|$)");return(b=document.cookie.match(c))?unescape(b[2]):null}cookie=getCookie("darkmode"),"enable"==cookie&&enableDarkmode(),window.matchMedia("(prefers-color-scheme: dark)").matches&&"disable"!==cookie&&(enableDarkmode(),document.cookie="darkmode=enable; path=/");var mobileBtn=function(){1==document.getElementById("switch_default").checked?(enableDarkmode(),document.cookie="darkmode=enable; path=/"):(removeDarkmode(),document.cookie="darkmode=disable; path=/")};</script>
+
+<div class="main"><div class="main-inner"><div class="content">
+<article class="post">
+<h2 class="post_title sm_margin"><a>vmware 双机联调 不能下断点 debug 问题</a></h2>
+<script>function lan(){if(document.getElementById("lan").innerText=="繁"){var s=document.getElementById("tongwenlet_cn");if(s!=null){document.body.removeChild(s)}var s=document.createElement("script");s.language="javascript";s.type="text/javascript";s.src="https://cdn.jsdelivr.net/gh/qyxtim/Static@1.1/bookmarklet_tw.js";s.id="tongwenlet_cn";document.body.appendChild(s);document.getElementById("lan").innerHTML="简"}else{if(document.getElementById("lan").innerText=="簡"){var s=document.getElementById("tongwenlet_cn");if(s!=null){document.body.removeChild(s)}var s=document.createElement("script");s.language="javascript";s.type="text/javascript";s.src="https://cdn.jsdelivr.net/gh/qyxtim/Static@1.1/bookmarklet_cn.js";s.id="tongwenlet_cn";document.body.appendChild(s);document.getElementById("lan").innerHTML="繁"}}};</script>
+<section class="post_details"><i class="iconfont icon-calendar"></i><span style="margin-right:15px"> 2024-01-09</span><i class="iconfont icon-browse"></i><span style="margin-right:15px"> <span id="busuanzi_value_page_pv"></span> Views</span><i class="iconfont icon-category"></i><span class="weaklink" style="margin-right:15px">	<a href="https://augu5tu.github.io/tag/m-OQ3O3c7_/" class="tag">VMware</a> | 	<a href="https://augu5tu.github.io/tag/pYJe21pU8F/" class="tag">技术</a> | 	<a href="https://augu5tu.github.io/tag/Xmo6nLOEXdk/" class="tag">二进制</a> | 	<a href="https://augu5tu.github.io/tag/zhuPkpOf2Lr/" class="tag">漏洞复现</a></span><i class="iconfont icon-caret-down"></i><span style="margin-right:15px">1695字</span><i class="iconfont icon-naozhong"></i><span style="margin-right:15px">6 min read</span><a id="lan" href="javascript:void(0);"onclick="lan();"title="调整简繁体" style="margin-right:15px;">繁</a>
+</section>
+
+<img class="featureImg" alt="featureimg" src="https://raw.githubusercontent.com/Augu5tu/picture/img/vmware-debug.png" referrerpolicy="no-referrer">
+
+<div style="display:flex">
+<div class="md_block" id="md_block">
+<div class="round-shape-one"></div>
+<p>在复现CVE-2022-42475 FortiGate 防火墙 漏洞时遇到了一个问题</p>
+<p>跟着<a href="https://forum.butian.net/share/2166">CVE-2022-42475 FortiGate SSLVPN 堆溢出漏洞分析与利用</a>和<a href="https://i3r0nya.cn/wiki/note/reverse/cve-2022-42475/">CVE-2022-42475 复现研究</a>、<a href="https://wzt.ac.cn/2022/12/15/CVE-2022-42475/">CVE-2022-42475</a>做了前面的环境准备和提取二进制等工作后在通过patch绕过文件系统校验这一步卡住了</p>
+<h2 id="具体情况">具体情况</h2>
+<p>使用vmlinux-to-elf将flatkc文件转换为elf文件后，使用gdb加载，再target remote进行远程连接后在call fgt_verify处下断点，但只要开始c那么FortiGate虚拟机就会直接关闭</p>
+<figure data-type="image" tabindex="1"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240119151002626.png" alt="image-20240119151002626" loading="lazy"></figure>
+<p>这个问题困扰了我们很长时间，刚刚算了一下，到现在快两个月了，终于找到了解决方法</p>
+<h2 id="解决方法">解决方法</h2>
+<p>关闭hyper-v和Device Guard</p>
+<ul>
+<li>
+<p>禁用Device Guard或Credential Guard</p>
+<ol>
+<li>在主机操作系统上，右键单击“<strong>开始”</strong> &gt; <strong>“运行”</strong>，键入gpedit.msc，然后单击“ **确定”。**本地组策略编辑器打开。</li>
+<li>转至<strong>本地计算机策略</strong> &gt; <strong>计算机配置</strong> &gt; <strong>管理模板&gt;系统</strong> &gt;<strong>Device Guard（或者是： 设备防护）</strong> &gt; <strong>启用基于虚拟化的安全性</strong>。</li>
+<li>选择<strong>已禁用</strong>。</li>
+</ol>
+<figure data-type="image" tabindex="2"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240119150736191.png" alt="image-20240119150736191" loading="lazy"></figure>
+</li>
+<li>
+<p><strong>以管理员身份运行Windows Powershell (管理员)（Windows键+X）</strong></p>
+<p>​    运行下面命令并重启电脑：</p>
+<pre><code class="language-cobol">bcdedit /set hypervisorlaunchtype off
+</code></pre>
+</li>
+</ul>
+<p>这时候再进行尝试的话，一句话，怎么调怎么有</p>
+<figure data-type="image" tabindex="3"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240119143653223.png" alt="image-20240119143653223" loading="lazy"></figure>
+<figure data-type="image" tabindex="4"><img src="https://raw.githubusercontent.com/Augu5tu/picture/img/image-20240119144850038.png" alt="image-20240119144850038" loading="lazy"></figure>
+<h2 id="原因探究">原因探究</h2>
+<p>我查看了Microsoft的官方文档介绍，这个也就是他说的<code>内存完整性</code>的另一个名字，对于这个内存完整性，文档介绍是</p>
+<blockquote>
+<p><strong>内存完整性</strong> 是 Windows 中提供的基于虚拟化的安全 (VBS) 功能。 内存完整性和 VBS 改进了 Windows 的威胁模型，并针对试图利用 Windows 内核的恶意软件提供更强大的保护。 VBS 使用 Windows 虚拟机监控程序创建独立的虚拟环境，该环境成为假定内核可能遭到入侵的 OS 的信任根。 内存完整性是一个关键组件，它通过在 VBS 的独立虚拟环境中运行内核模式代码完整性来保护和强化 Windows。 内存完整性还限制可用于破坏系统的内核内存分配。</p>
+</blockquote>
+<blockquote>
+<h2 id="内存完整性功能">内存完整性功能</h2>
+<ul>
+<li>保护内核模式驱动程序的控制流防护 (CFG) 位图的修改。</li>
+<li>保护内核模式代码完整性进程，确保其他受信任的内核进程具有有效的证书。</li>
+</ul>
+</blockquote>
+<p>第一个功能，我找了几篇介绍CFG的文章看了一下，感觉是为了防止对内核模式驱动程序的控制流进行恶意修改。如果我尝试在虚拟机内通过修改控制流来影响内核模式驱动程序，内存完整性功能可能会检测到这样的修改，然后结束这个进程，造成我虚拟机直接退出的情况，我觉得是很有可能的</p>
+<p>第二个功能我不太了解进程证书的情况，不知道会不会产生什么影响</p>
+<p>但总的来说，在一个虚拟机里用GDB连接到另一个虚拟机，而且还在它启动的时候改内存，感觉触发内存完整性功能的检测还是挺有可能的，因为这涉及对内核模式代码的操作，尤其是对控制流的修改，也刚好能解释为什么不下断点能够正常运行，因为并没有修改控制流</p>
+<p>然后我尝试了再次开启hyper-v，在内存完整性关闭的情况下，仍然会同样断开</p>
+<p>Hyper-V 利用硬件虚拟化技术（如Intel VT-x或AMD-V）来提高虚拟机性能，并支持在虚拟机中运行受保护的内核模式代码。虚拟化本身引入了一些额外的层次，可能会影响对内存和控制流的访问，之前VMware官方人员要求关闭也不是没有理由的。</p>
+<h2 id="辛酸历程">辛酸历程</h2>
+<p>简单回顾一下这段时间的辛酸历程，我都不太相信我能成功了</p>
+<ul>
+<li>开头两周配了个防火墙环境，当时官网上下载的726的固件</li>
+<li>完了就是二进制提取，然后静态分析啥的，到这里还一切正常</li>
+<li>然后开始做，调试，遇到问题，怀疑是不是断点没下好啊，又开始分析，还寄希望于能够通过静态分析和动调找到到底是哪里让我们结束了这个程序</li>
+<li>中间各种分析，找了结束程序的函数、重启函数，我记得当时TAO还创了一个秒表法，根据时间来判断会进到哪一个函数，祈祷运气特别好就遇到了正确的地方，中间n了好长时间，分析的眼都花了，各个函数分析吐了</li>
+<li>后来放弃了，觉得不行咱们先找师兄，用他做过的固件做一下，这时候开始做7.2.4</li>
+<li>中间师兄亲自下场，可惜相同的地方遇到了相同的问题</li>
+<li>之后期末周，又被折磨了快一个月</li>
+<li>然后开始想，到底是哪边可能有问题，觉得还是调试的部分，直接用什么也没改的固件开始调</li>
+<li>惊讶的发现，ctmd，啥也没改也断不了，中间一步一步n，看为什么断，总是在各种奇奇怪怪的地方出问题</li>
+<li>师兄感觉这个可能是gdb或者Ubuntu版本问题，我感觉也确实有可能，又开始配了一波环境，16，18，20，22，gdb、peda、pwndbg排列组合都试了，大同小异</li>
+<li>师兄又来操作了一波，还专门写了个脚本，昨晚帮我们干到7：30才去吃完饭，食堂都快下班了，还是没能成功</li>
+<li>最后实在没辙，用师兄的老电脑试了，人就是能成，我TM就是成不了</li>
+<li>开始挨个排查，文件换师兄的，没用；FortiGate固件直接换，也没用；Ubuntu16也直接换，还是没用，啥都一样了，不可能是VMware版本吧，没辙了，先试试</li>
+<li>在换vm 16的时候看见提示，说Hyper-v或者Device Guard未关闭啥的，我一想，不对啊，我不早就关了吗</li>
+<li>挺早的时候，网上查了相关的问题，VMware 的官方支持团队答过一个沾了一点边的，说hyper-v要关掉，另外，这个问题好像网上没有说过的</li>
+<li>然后终于能够成功</li>
+<li>试了又将VMware 升级到17，还是能够成功，一句话，怎么试怎么有了</li>
+</ul>
+<p>我都想买个失败总是贯穿人生始终放桌子上了，终于，还是没有被贯穿到底</p>
+
+<span id="footnote"></span>
+<div id = "warn"></div>
+</div>
+<div class="toc-container"><ul class="markdownIt-TOC">
+<li>
+<ul>
+<li><a href="#%E5%85%B7%E4%BD%93%E6%83%85%E5%86%B5">具体情况</a></li>
+<li><a href="#%E8%A7%A3%E5%86%B3%E6%96%B9%E6%B3%95">解决方法</a></li>
+<li><a href="#%E5%8E%9F%E5%9B%A0%E6%8E%A2%E7%A9%B6">原因探究</a></li>
+<li><a href="#%E5%86%85%E5%AD%98%E5%AE%8C%E6%95%B4%E6%80%A7%E5%8A%9F%E8%83%BD">内存完整性功能</a></li>
+<li><a href="#%E8%BE%9B%E9%85%B8%E5%8E%86%E7%A8%8B">辛酸历程</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<div id="fullPage"><canvas id="canvas"></canvas></div>
+</article>
+<div id="eof"><span>EOF</span></div><div class="round-shape-one"></div>
+<section>
+<div class="doc_comments">
+
+</div></section>
+</div></div></div><script>
+"use strict";!function(){for(var n=document.getElementsByTagName("pre"),e=n.length,s=0;s<e;s++){n[s].innerHTML='<span class="line-number"></span>'+n[s].innerHTML+'<span class="cl"></span>';for(var a=n[s].innerHTML.split(/\n/).length,r=0;r<a-1;r++){n[s].getElementsByTagName("span")[0].innerHTML+="<span>"+(r+1)+"</span>"}}}();
+let mainNavLinks=document.querySelectorAll(".markdownIt-TOC a");window.addEventListener("scroll",event=>{let fromTop=window.scrollY;mainNavLinks.forEach((link,index)=>{let section=document.getElementById(decodeURI(link.hash).substring(1));let nextSection=null
+if(mainNavLinks[index+1]){nextSection=document.getElementById(decodeURI(mainNavLinks[index+1].hash).substring(1));}
+if(section.offsetTop<=fromTop){if(nextSection){if(nextSection.offsetTop>fromTop){link.classList.add("currentToc");}else{link.classList.remove("currentToc");}}else{link.classList.add("currentToc");}}else{link.classList.remove("currentToc");}});});
+var h=document.documentElement,b=document.body,st="scrollTop",sh="scrollHeight",progress=document.querySelector(".progress"),scroll;document.addEventListener("scroll",function(){scroll=(h[st]||b[st])/((h[sh]||b[sh])-h.clientHeight)*100;progress.style.setProperty("--scroll",scroll+"%")});
+var wxScale=new WxScale({fullPage:document.querySelector("#fullPage"),canvas:document.querySelector("#canvas")});var imgBox=document.querySelectorAll("#md_block img");for(var i=0;i<imgBox.length;i++){imgBox[i].onclick=function(e){wxScale.start(this)}};
+</script>
+<a id="scrollUp" href="#top" style="position: fixed; z-index: 2147483647; display: block;"></a><div class="footer animated fadeInDown"><div class="site_footer"><div class="mysocials"><div class="my_socials"><a href="https://github.com/AugustuXue"title="github"><i class="iconfont icon-github"></i></a><a href="https://augu5tu.github.io/atom.xml"title="rss"><i class="iconfont icon-rss"></i></a></div></div><div class="copyright"id="copyright">Powered by <a href="https://github.com/getgridea/gridea" target="_blank">Gridea</a>Copyright © 2018-2020 <a href="https://augu5tu.github.io" style="margin:0;">Augu5tu-飞光</a>.</div>
+<span style="display: inline;margin-right:15px;">👁<strong><span id="busuanzi_value_site_uv"></span></strong></span><span id="busuanzi_container_page_pv" style="display: inline;"><span>📚<strong>5</strong> posts</span></div></div>
+<script>
+console.log("\n %c \u26a1Theme: Bitcron-pro Author's Blog:https://blog.blinkstar.cn  Writen By Serence  \n\n", "color: #ffffff; background: rgba(49, 49, 49, 0.85); padding:5px 0;border-radius:5px;", );
+</script>
+<script src="https://cdn.jsdelivr.net/npm/instant.page@3.0.0/instantpage.min.js" type="module" defer></script>
+<script type="text/javascript" async src="https://augu5tu.github.io/media/js/prism.js"></script>
+</body>
+</html>
