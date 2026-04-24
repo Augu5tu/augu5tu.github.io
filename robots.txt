@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://augu5tu.github.io/sitemap.xml
