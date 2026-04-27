@@ -182,23 +182,44 @@
 </script>
 
 <script>
-    // Reading Progress Component
     document.addEventListener('DOMContentLoaded', () => {
+        const readingTools = document.querySelector('.reading-tools');
         const progressValue = document.querySelector('.reading-value');
         const progressCircle = document.querySelector('.progress-ring__circle');
-        const container = document.querySelector('.reading-progress-container');
+        const outlineContainer = document.querySelector('.reading-outline-container');
+        const outlineList = document.querySelector('.reading-outline-list');
+        const articleEntry = document.querySelector('.mod-post__entry');
 
-        // Exit if elements don't exist (e.g., not on a post page)
-        if (!progressValue || !progressCircle || !container) {
+        if (!readingTools || !progressValue || !progressCircle || !outlineContainer || !outlineList || !articleEntry) {
             return;
         }
 
-        // SVG Circle setup
         const radius = progressCircle.r.baseVal.value;
         const circumference = 2 * Math.PI * radius;
+        const headings = Array.from(articleEntry.querySelectorAll('h2, h3, h4'));
+        const activeOffset = 140;
+        let outlineLinks = [];
+        let headingTargets = [];
 
         progressCircle.style.strokeDasharray = `${circumference} ${circumference}`;
         progressCircle.style.strokeDashoffset = circumference;
+
+        const slugCounts = new Map();
+
+        function slugify(text, index) {
+            const normalized = text
+                .trim()
+                .toLowerCase()
+                .normalize('NFKD')
+                .replace(/[̀-ͯ]/g, '')
+                .replace(/[^\w一-鿿\s-]/g, '')
+                .replace(/[_\s-]+/g, '-')
+                .replace(/^-+|-+$/g, '');
+            const base = normalized || `section-${index + 1}`;
+            const seenCount = slugCounts.get(base) || 0;
+            slugCounts.set(base, seenCount + 1);
+            return seenCount === 0 ? base : `${base}-${seenCount + 1}`;
+        }
 
         function setProgress(percent) {
             const safePercent = Math.min(100, Math.max(0, percent));
@@ -207,33 +228,70 @@
             progressCircle.style.strokeDashoffset = offset;
         }
 
+        function buildOutline() {
+            if (headings.length < 2) {
+                outlineContainer.classList.add('is-hidden');
+                return;
+            }
+
+            const fragment = document.createDocumentFragment();
+
+            headings.forEach((heading, index) => {
+                if (!heading.id) {
+                    heading.id = slugify(heading.textContent || '', index);
+                }
+
+                const link = document.createElement('a');
+                link.href = `#${heading.id}`;
+                link.textContent = (heading.textContent || '').trim();
+                link.className = `reading-outline-link reading-outline-link--${heading.tagName.toLowerCase()}`;
+                fragment.appendChild(link);
+            });
+
+            outlineList.innerHTML = '';
+            outlineList.appendChild(fragment);
+            outlineContainer.classList.remove('is-hidden');
+            outlineLinks = Array.from(outlineList.querySelectorAll('.reading-outline-link'));
+            headingTargets = headings.filter(heading => heading.id);
+        }
+
+        function updateActiveHeading() {
+            if (!outlineLinks.length || !headingTargets.length) {
+                return;
+            }
+
+            let activeIndex = 0;
+            headingTargets.forEach((heading, index) => {
+                const headingTop = heading.getBoundingClientRect().top;
+                if (headingTop - activeOffset <= 0) {
+                    activeIndex = index;
+                }
+            });
+
+            outlineLinks.forEach((link, index) => {
+                link.classList.toggle('is-active', index === activeIndex);
+            });
+        }
+
         function onScroll() {
             const scrollTop = window.scrollY || document.documentElement.scrollTop;
             const scrollHeight = document.documentElement.scrollHeight - document.documentElement.clientHeight;
 
             if (scrollHeight <= 0) {
                 setProgress(0);
-                return;
-            }
-
-            const scrollPercent = (scrollTop / scrollHeight) * 100;
-            setProgress(scrollPercent);
-
-            // Show/Hide logic: Show if scrolled more than 100px
-            if (scrollTop > 100) {
-                container.classList.add('show');
             } else {
-                container.classList.remove('show');
+                const scrollPercent = (scrollTop / scrollHeight) * 100;
+                setProgress(scrollPercent);
             }
+
+            readingTools.classList.toggle('show', scrollTop > 100);
+            updateActiveHeading();
         }
 
-        // Initialize
+        buildOutline();
         onScroll();
 
-        // Listen for scroll events
         window.addEventListener('scroll', onScroll, { passive: true });
-
-        // Recalculate on resize
         window.addEventListener('resize', onScroll);
     });
 </script>
@@ -451,7 +509,7 @@
     
 
     
-<script>console.log("\n%c ✦ Gridea Pro v1.1.1 %c · Theme: amore-jinja2 v1.1.0 · https://gridea.pro %c\n","color:#fadfa3;background:#111111;padding:9px 14px;border-radius:4px 0 0 4px;font-weight:500;font-size:12px","color:#e05c00;background:#fff3ec;padding:9px 14px;border-radius:0 4px 4px 0;font-size:11px","")</script>
+<script>console.log("\n%c ✦ Gridea Pro v1.1.1 %c · Theme: amore-jinja3 v1.1.0 · https://gridea.pro %c\n","color:#fadfa3;background:#111111;padding:9px 14px;border-radius:4px 0 0 4px;font-weight:500;font-size:12px","color:#e05c00;background:#fff3ec;padding:9px 14px;border-radius:0 4px 4px 0;font-size:11px","")</script>
 </body>
 
 </html>
