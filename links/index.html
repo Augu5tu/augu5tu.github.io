@@ -14,7 +14,7 @@
 <link rel="stylesheet" href="/styles/main.min.css">
 
 
-<style>:root{--accent-color:#28df99;}</style>
+<style>:root{ --accent-color:#15803D;--marker-color:#166534;--article-link-color:#005FCC;--selection-color:#14532D; }</style>
 
 
 <script>
@@ -252,6 +252,25 @@
             headingTargets = headings.filter(heading => heading.id);
         }
 
+        function keepActiveOutlineItemInView(activeLink) {
+            if (!activeLink || outlineContainer.classList.contains('is-hidden')) {
+                return;
+            }
+
+            const maxScrollTop = outlineContainer.scrollHeight - outlineContainer.clientHeight;
+            if (maxScrollTop <= 0) {
+                return;
+            }
+
+            const desiredScrollTop = activeLink.offsetTop - (outlineContainer.clientHeight / 2) + (activeLink.offsetHeight / 2);
+            const safeScrollTop = Math.max(0, Math.min(maxScrollTop, desiredScrollTop));
+
+            outlineContainer.scrollTo({
+                top: safeScrollTop,
+                behavior: 'smooth'
+            });
+        }
+
         function updateActiveHeading() {
             if (!outlineLinks.length || !headingTargets.length) {
                 return;
@@ -265,9 +284,16 @@
                 }
             });
 
+            let activeLink = null;
             outlineLinks.forEach((link, index) => {
-                link.classList.toggle('is-active', index === activeIndex);
+                const isActive = index === activeIndex;
+                link.classList.toggle('is-active', isActive);
+                if (isActive) {
+                    activeLink = link;
+                }
             });
+
+            keepActiveOutlineItemInView(activeLink);
         }
 
         function onScroll() {

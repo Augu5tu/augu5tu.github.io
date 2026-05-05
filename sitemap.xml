@@ -2,7 +2,7 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
   <url>
     <loc>https://augu5tu.github.io/</loc>
-    <lastmod>2026-04-27T22:33:37+08:00</lastmod>
+    <lastmod>2026-05-05T16:13:16+08:00</lastmod>
     <changefreq>daily</changefreq>
     <priority>1.0</priority>
   </url>
@@ -44,67 +44,67 @@
   </url>
   <url>
     <loc>https://augu5tu.github.io/post/</loc>
-    <lastmod>2026-04-27T22:33:37+08:00</lastmod>
+    <lastmod>2026-05-05T16:13:16+08:00</lastmod>
     <changefreq>daily</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
     <loc>https://augu5tu.github.io/tags/</loc>
-    <lastmod>2026-04-27T22:33:37+08:00</lastmod>
+    <lastmod>2026-05-05T16:13:16+08:00</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
     <loc>https://augu5tu.github.io/archives/</loc>
-    <lastmod>2026-04-27T22:33:37+08:00</lastmod>
+    <lastmod>2026-05-05T16:13:16+08:00</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
-    <loc>https://augu5tu.github.io/tag/%E6%8A%80%E6%9C%AF/</loc>
-    <lastmod>2026-04-27T22:33:37+08:00</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.4</priority>
-  </url>
-  <url>
-    <loc>https://augu5tu.github.io/tag/%E6%A8%A1%E7%B3%8A%E6%B5%8B%E8%AF%95/</loc>
-    <lastmod>2026-04-27T22:33:37+08:00</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.4</priority>
-  </url>
-  <url>
-    <loc>https://augu5tu.github.io/tag/fuzz/</loc>
-    <lastmod>2026-04-27T22:33:37+08:00</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.4</priority>
-  </url>
-  <url>
-    <loc>https://augu5tu.github.io/tag/%E4%BA%8C%E8%BF%9B%E5%88%B6/</loc>
-    <lastmod>2026-04-27T22:33:37+08:00</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.4</priority>
-  </url>
-  <url>
-    <loc>https://augu5tu.github.io/tag/%E9%98%B2%E7%81%AB%E5%A2%99/</loc>
-    <lastmod>2026-04-27T22:33:37+08:00</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.4</priority>
-  </url>
-  <url>
     <loc>https://augu5tu.github.io/tag/%E6%BC%8F%E6%B4%9E%E5%A4%8D%E7%8E%B0/</loc>
-    <lastmod>2026-04-27T22:33:37+08:00</lastmod>
+    <lastmod>2026-05-05T16:13:16+08:00</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.4</priority>
   </url>
   <url>
     <loc>https://augu5tu.github.io/tag/VMware/</loc>
-    <lastmod>2026-04-27T22:33:37+08:00</lastmod>
+    <lastmod>2026-05-05T16:13:16+08:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.4</priority>
+  </url>
+  <url>
+    <loc>https://augu5tu.github.io/tag/%E6%8A%80%E6%9C%AF/</loc>
+    <lastmod>2026-05-05T16:13:16+08:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.4</priority>
+  </url>
+  <url>
+    <loc>https://augu5tu.github.io/tag/%E6%A8%A1%E7%B3%8A%E6%B5%8B%E8%AF%95/</loc>
+    <lastmod>2026-05-05T16:13:16+08:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.4</priority>
+  </url>
+  <url>
+    <loc>https://augu5tu.github.io/tag/fuzz/</loc>
+    <lastmod>2026-05-05T16:13:16+08:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.4</priority>
+  </url>
+  <url>
+    <loc>https://augu5tu.github.io/tag/%E4%BA%8C%E8%BF%9B%E5%88%B6/</loc>
+    <lastmod>2026-05-05T16:13:16+08:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.4</priority>
+  </url>
+  <url>
+    <loc>https://augu5tu.github.io/tag/%E9%98%B2%E7%81%AB%E5%A2%99/</loc>
+    <lastmod>2026-05-05T16:13:16+08:00</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.4</priority>
   </url>
   <url>
     <loc>https://augu5tu.github.io/links/</loc>
-    <lastmod>2026-04-27T22:33:37+08:00</lastmod>
+    <lastmod>2026-05-05T16:13:16+08:00</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.3</priority>
   </url>

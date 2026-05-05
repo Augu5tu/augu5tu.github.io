@@ -17,7 +17,7 @@
 <link rel="stylesheet" href="/styles/main.min.css">
 
 
-<style>:root{--accent-color:#28df99;}</style>
+<style>:root{ --accent-color:#15803D;--marker-color:#166534;--article-link-color:#005FCC;--selection-color:#14532D; }</style>
 
 
 <script>
@@ -255,6 +255,25 @@
             headingTargets = headings.filter(heading => heading.id);
         }
 
+        function keepActiveOutlineItemInView(activeLink) {
+            if (!activeLink || outlineContainer.classList.contains('is-hidden')) {
+                return;
+            }
+
+            const maxScrollTop = outlineContainer.scrollHeight - outlineContainer.clientHeight;
+            if (maxScrollTop <= 0) {
+                return;
+            }
+
+            const desiredScrollTop = activeLink.offsetTop - (outlineContainer.clientHeight / 2) + (activeLink.offsetHeight / 2);
+            const safeScrollTop = Math.max(0, Math.min(maxScrollTop, desiredScrollTop));
+
+            outlineContainer.scrollTo({
+                top: safeScrollTop,
+                behavior: 'smooth'
+            });
+        }
+
         function updateActiveHeading() {
             if (!outlineLinks.length || !headingTargets.length) {
                 return;
@@ -268,9 +287,16 @@
                 }
             });
 
+            let activeLink = null;
             outlineLinks.forEach((link, index) => {
-                link.classList.toggle('is-active', index === activeIndex);
+                const isActive = index === activeIndex;
+                link.classList.toggle('is-active', isActive);
+                if (isActive) {
+                    activeLink = link;
+                }
             });
+
+            keepActiveOutlineItemInView(activeLink);
         }
 
         function onScroll() {
@@ -433,6 +459,18 @@
             <ul class="tags-list">
                 
                 <li>
+                    <a href="/tag/漏洞复现/" rel="tag" class="size-10" title="3 个话题">
+                        # 漏洞复现 <span>(3)</span>
+                    </a>
+                </li>
+                
+                <li>
+                    <a href="/tag/VMware/" rel="tag" class="size-10" title="1 个话题">
+                        # VMware <span>(1)</span>
+                    </a>
+                </li>
+                
+                <li>
                     <a href="/tag/技术/" rel="tag" class="size-10" title="4 个话题">
                         # 技术 <span>(4)</span>
                     </a>
@@ -459,18 +497,6 @@
                 <li>
                     <a href="/tag/防火墙/" rel="tag" class="size-10" title="2 个话题">
                         # 防火墙 <span>(2)</span>
-                    </a>
-                </li>
-                
-                <li>
-                    <a href="/tag/漏洞复现/" rel="tag" class="size-10" title="3 个话题">
-                        # 漏洞复现 <span>(3)</span>
-                    </a>
-                </li>
-                
-                <li>
-                    <a href="/tag/VMware/" rel="tag" class="size-10" title="1 个话题">
-                        # VMware <span>(1)</span>
                     </a>
                 </li>
                 
